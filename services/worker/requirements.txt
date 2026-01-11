@@ -1,0 +1,5 @@
+SQLAlchemy==2.0.36
+asyncpg==0.29.0
+redis==5.0.8
+rq==1.16.2
+python-dotenv==1.0.1

@@ -1,0 +1,26 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from . import _audit
+from ..db import get_db
+from ..models import User
+from ..schemas import LoginRequest, TokenResponse, MeResponse
+from ..core.security import verify_password, create_access_token
+from ..deps import get_current_user
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+@router.post("/login", response_model=TokenResponse)
+async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+    q = await db.execute(select(User).where(User.email == req.email, User.is_active == True))
+    user = q.scalar_one_or_none()
+    if not user or not verify_password(req.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email/password")
+
+    token = create_access_token(str(user.id), extra={"role": user.role})
+    await _audit.write(db, user.id, "auth.login", "user", user.id, meta={"email": user.email})
+    return TokenResponse(access_token=token)
+
+@router.get("/me", response_model=MeResponse)
+async def me(user: User = Depends(get_current_user)):
+    return MeResponse(id=user.id, email=user.email, name=user.name, role=user.role)
