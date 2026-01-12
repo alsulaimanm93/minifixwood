@@ -16,6 +16,29 @@ from ..s3 import ensure_bucket, presign_put, presign_get
 from . import _audit
 
 router = APIRouter(prefix="/files", tags=["files"])
+@router.get("", response_model=list[FileOut])
+async def list_files(
+    project_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if project_id is None:
+        result = await db.execute(text("""
+            SELECT id, project_id, kind, name, mime, size_bytes, current_version_id
+            FROM files
+            ORDER BY updated_at DESC
+        """))
+    else:
+        result = await db.execute(text("""
+            SELECT id, project_id, kind, name, mime, size_bytes, current_version_id
+            FROM files
+            WHERE project_id = :pid
+            ORDER BY updated_at DESC
+        """), {"pid": str(project_id)})
+
+    rows = result.mappings().all()
+    return [FileOut(**r) for r in rows]
+
 
 def safe_name(name: str) -> str:
     name = name.strip().replace("\\", "/").split("/")[-1]
