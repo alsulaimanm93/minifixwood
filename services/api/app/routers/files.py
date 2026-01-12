@@ -38,6 +38,17 @@ async def list_files(
 
     rows = result.mappings().all()
     return [FileOut(**r) for r in rows]
+@router.get("/{file_id}", response_model=FileOut)
+async def get_file(file_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    result = await db.execute(text("""
+        SELECT id, project_id, kind, name, mime, size_bytes, current_version_id
+        FROM files
+        WHERE id = :fid
+    """), {"fid": str(file_id)})
+    row = result.mappings().one_or_none()
+    if not row:
+        raise HTTPException(404, "File not found")
+    return FileOut(**row)
 
 
 def safe_name(name: str) -> str:
@@ -149,3 +160,4 @@ async def presign_download(file_id: UUID, db: AsyncSession = Depends(get_db), us
         raise HTTPException(404, "File has no version yet")
     url = presign_get(row["object_key"])
     return PresignDownloadResponse(url=url)
+

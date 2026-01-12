@@ -1,4 +1,3 @@
-\
 use anyhow::{anyhow, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -132,9 +131,19 @@ pub async fn get_or_download(api: &ApiClient, file_id: Uuid) -> Result<PathBuf> 
     let dir = root.join(file_id.to_string()).join(ver_id.to_string());
     fs::create_dir_all(&dir)?;
 
-    // Use file_id as name fallback; ideally you'd fetch the logical file name from another endpoint later.
-    let filename = format!("{}_{}", file_id, ver_id);
+    #[derive(Deserialize)]
+    struct FileInfo { name: String }
+
+    // Fetch real filename from API so we keep extension (.dxf/.skp/.pdf/...)
+    let info: FileInfo = api.get_json(&format!("/files/{}", file_id)).await?;
+    let filename = std::path::Path::new(&info.name)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{}_{}", file_id, ver_id));
+
     let local_path = dir.join(filename);
+
 
     // Stream download
     let resp = reqwest::Client::new().get(&dl.url).send().await?;
@@ -145,7 +154,7 @@ pub async fn get_or_download(api: &ApiClient, file_id: Uuid) -> Result<PathBuf> 
     use futures_util::StreamExt;
     while let Some(chunk) = stream.next().await {
         let bytes = chunk?;
-        out.write_all(&bytes).await?;
+        out.write_all(bytes.as_ref()).await?;
     }
     out.flush().await?;
 

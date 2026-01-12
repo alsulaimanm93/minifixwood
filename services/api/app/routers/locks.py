@@ -20,12 +20,14 @@ async def acquire(req: LockAcquireRequest, db: AsyncSession = Depends(get_db), u
 
     # If there's an active lock by someone else (not expired), block.
     q = await db.execute(text("""
-        SELECT id, locked_by, expires_at, active
+        SELECT id, file_id, locked_by, expires_at, active
         FROM locks
         WHERE file_id = :fid AND active = true
         LIMIT 1
     """), {"fid": str(req.file_id)})
     existing = q.mappings().one_or_none()
+    if existing and existing["expires_at"] > now and str(existing["locked_by"]) == str(user.id):
+        return LockOut(**existing)
 
     if existing:
         # auto-expire stale locks
@@ -44,7 +46,7 @@ async def acquire(req: LockAcquireRequest, db: AsyncSession = Depends(get_db), u
     """), {"fid": str(req.file_id), "uid": str(user.id), "expires": expires, "client_id": req.client_id})
     row = result.mappings().one()
     await db.commit()
-    lock_id = UUID(row["id"])
+    lock_id = row["id"]
     await _audit.write(db, user.id, "lock.acquire", "lock", lock_id, meta={"file_id": str(req.file_id), "client_id": req.client_id})
     return LockOut(**row)
 
@@ -75,5 +77,5 @@ async def release(req: LockReleaseRequest, db: AsyncSession = Depends(get_db), u
     if not row:
         raise HTTPException(404, "Lock not found")
     await db.commit()
-    await _audit.write(db, user.id, "lock.release", "lock", UUID(row["id"]), meta={"file_id": row["file_id"]})
+    await _audit.write(db, user.id, "lock.release", "lock", row["id"], meta={"file_id": row["file_id"]})
     return {"ok": True}
