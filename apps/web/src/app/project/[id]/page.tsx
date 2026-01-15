@@ -143,6 +143,54 @@ export default function ProjectPage() {
     }
   }
 
+  async function openFile(f: FileRow) {
+    setMsg(null);
+    setBusyId(`open:${f.id}`);
+    try {
+      // 1) get presigned download URL (auth works via apiFetch)
+      const res = await apiFetch<{ url: string }>(`/files/${f.id}/presign-download`, {
+        method: "POST",
+      });
+
+      // 2) call local helper (runs on your PC) to cache+open the file
+      const token =
+        (typeof window !== "undefined" &&
+          (localStorage.getItem("access_token") ||
+            localStorage.getItem("token") ||
+            localStorage.getItem("auth_token"))) ||
+        null;
+
+      const r = await fetch("http://127.0.0.1:17832/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          file_id: f.id,
+          filename: f.name,
+          mime: f.mime || null,
+          download_url: res.url,
+          token,
+        }),
+      });
+
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(`Local helper error (${r.status}): ${t}`);
+      }
+
+      setMsg("Opened ✅ (local cache)");
+    } catch (e: any) {
+      // This is the common case until helper is running:
+      // "Failed to fetch" => helper not running
+      setMsg(
+        (e?.message || String(e)) +
+          " | If you see 'Failed to fetch', start the local helper first."
+      );
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   return (
     <div style={{ maxWidth: 900 }}>
       <h1>Project</h1>
@@ -240,14 +288,29 @@ export default function ProjectPage() {
 
                     <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
                       <button
+                        onClick={(e) => { e.stopPropagation(); openFile(f); }}
+                        disabled={busyId === `open:${f.id}`}
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #30363d",
+                          background: "#2ea043",
+                          color: "white",
+                          fontWeight: 900,
+                        }}
+                      >
+                        {busyId === `open:${f.id}` ? "..." : "Open"}
+                      </button>
+
+                      <button
                         onClick={(e) => { e.stopPropagation(); downloadFile(f.id); }}
                         disabled={busyId === f.id}
                         style={{
                           padding: "8px 12px",
                           borderRadius: 12,
                           border: "1px solid #30363d",
-                          background: "#1f6feb",
-                          color: "white",
+                          background: "#111827",
+                          color: "#e6edf3",
                           fontWeight: 800,
                         }}
                       >

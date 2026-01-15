@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import React, { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
@@ -315,7 +315,7 @@ async function openPreview(f: FileRow) {
         <input
           value={projQ}
           onChange={(e) => setProjQ(e.target.value)}
-          placeholder="Search projects…"
+          placeholder="Search projectsâ€¦"
           style={{
             width: "100%",
             marginTop: 10,
@@ -424,7 +424,7 @@ async function openPreview(f: FileRow) {
                     }}
                   >
                     <div style={{ fontWeight: 900 }}>{SECTION_TITLES[k]}</div>
-                    <div style={{ opacity: 0.6, fontSize: 12 }}>›</div>
+                    <div style={{ opacity: 0.6, fontSize: 12 }}>â€º</div>
                   </button>
                 );
               })}
@@ -443,7 +443,7 @@ async function openPreview(f: FileRow) {
               <div>
                 <div style={{ fontWeight: 950, fontSize: 18 }}>Workspace</div>
                 <div style={{ opacity: 0.7, fontSize: 13 }}>
-                  {selectedProject.name} • {SECTION_TITLES[section]}
+                  {selectedProject.name} â€¢ {SECTION_TITLES[section]}
                 </div>
               </div>
 
@@ -465,7 +465,7 @@ async function openPreview(f: FileRow) {
             {/* Files list */}
             <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minHeight: 520 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                <div style={{ fontWeight: 900, fontSize: 15 }}>Files • {SECTION_TITLES[section]}</div>
+                <div style={{ fontWeight: 900, fontSize: 15 }}>Files â€¢ {SECTION_TITLES[section]}</div>
                 <button
                     onClick={() => (selectedProjectId ? loadFiles(selectedProjectId) : null)}
                     style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3" }}
@@ -505,10 +505,10 @@ async function openPreview(f: FileRow) {
                         <div style={{ minWidth: 0 }}>
                             <div style={{ fontWeight: 900, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.name}</div>
                             <div style={{ opacity: 0.75, fontSize: 12 }}>
-                            {f.kind} • {fmtSize(f.size_bytes)}
+                            {f.kind} â€¢ {fmtSize(f.size_bytes)}
                             </div>
                         </div>
-                        <div style={{ opacity: 0.7, fontSize: 12, whiteSpace: "nowrap" }}>{busyFileId === f.id ? "…" : ""}</div>
+                        <div style={{ opacity: 0.7, fontSize: 12, whiteSpace: "nowrap" }}>{busyFileId === f.id ? "â€¦" : ""}</div>
                         </button>
                     );
                     })
@@ -559,7 +559,7 @@ async function openPreview(f: FileRow) {
                             <div style={{ padding: 14, borderRadius: 14, border: "1px solid #30363d", background: "#0f1623" }}>
                             <div style={{ fontWeight: 900 }}>No inline preview</div>
                             <div style={{ opacity: 0.75, marginTop: 6, fontSize: 12 }}>
-                                Browser can’t render {isXlsx ? "XLS/XLSX" : "DOC/DOCX"} directly. Use Download/Open.
+                                Browser canâ€™t render {isXlsx ? "XLS/XLSX" : "DOC/DOCX"} directly. Use Open (main) or Download.
                             </div>
                             </div>
                         );
@@ -568,7 +568,7 @@ async function openPreview(f: FileRow) {
                         return (
                         <div style={{ padding: 14, borderRadius: 14, border: "1px solid #30363d", background: "#0f1623" }}>
                             <div style={{ fontWeight: 900 }}>Preview not available</div>
-                            <div style={{ opacity: 0.75, marginTop: 6, fontSize: 12 }}>Use Download/Open.</div>
+                            <div style={{ opacity: 0.75, marginTop: 6, fontSize: 12 }}>Use Open.</div>
                         </div>
                         );
                     })()}
@@ -576,10 +576,18 @@ async function openPreview(f: FileRow) {
 
                     <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
                     <button
-                        onClick={() => window.open(`/api/files/${selectedFile.id}/download`, "_blank", "noopener,noreferrer")}
+                        onClick={async () => {
+                          try {
+                            const r = await apiFetch<{ url: string }>(`/files/${selectedFile.id}/presign-download`, { method: "POST" });
+                            window.open(r.url, "_blank", "noopener,noreferrer");
+                          } catch (e: any) {
+                            setPreviewErr(e?.message || String(e));
+                          }
+                        }}
+
                         style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #30363d", background: "#1f6feb", color: "white", fontWeight: 900 }}
                     >
-                        Download / Open
+                        Open
                     </button>
                     </div>
                 </>
@@ -593,3 +601,4 @@ async function openPreview(f: FileRow) {
     </div>
   );
 }
+
