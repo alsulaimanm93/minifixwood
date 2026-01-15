@@ -24,3 +24,18 @@ Thumbs.db
 # Local cache (desktop)
 .cache/
 repo.bundle
+node_modules/
+.next/
+dist/
+.DS_Store
+
+.env
+.env.*
+*.log
+
+__pycache__/
+*.pyc
+
+workshop-cloud.bundle
+reset_pw.py
+login.json
