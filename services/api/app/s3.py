@@ -42,10 +42,21 @@ def presign_put(object_key: str, content_type: str | None, expires_sec: int = 90
         headers["Content-Type"] = content_type
     return url, headers
 
-def presign_get(object_key: str, expires_sec: int = 900) -> str:
+def presign_get(
+    object_key: str,
+    expires_sec: int = 900,
+    response_content_type: str | None = None,
+    response_content_disposition: str | None = None,
+) -> str:
     c = s3_presign_client()
+    params: dict = {"Bucket": settings.s3_bucket, "Key": object_key}
+    if response_content_type:
+        params["ResponseContentType"] = response_content_type
+    if response_content_disposition:
+        params["ResponseContentDisposition"] = response_content_disposition
+
     return c.generate_presigned_url(
         ClientMethod="get_object",
-        Params={"Bucket": settings.s3_bucket, "Key": object_key},
+        Params=params,
         ExpiresIn=expires_sec,
     )

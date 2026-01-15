@@ -18,6 +18,14 @@ async def list_projects(status: str = "current", db: AsyncSession = Depends(get_
         id=p.id, project_no=p.project_no, name=p.name, status=p.status, priority=p.priority, updated_at=p.updated_at
     ) for p in rows]
 
+@router.get("/all", response_model=list[ProjectOut])
+async def list_projects_all(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    q = await db.execute(select(Project).order_by(Project.updated_at.desc()))
+    rows = q.scalars().all()
+    return [ProjectOut(
+        id=p.id, project_no=p.project_no, name=p.name, status=p.status, priority=p.priority, updated_at=p.updated_at
+    ) for p in rows]
+
 @router.post("", response_model=ProjectOut)
 async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     # Use raw SQL to keep it simple and explicit (timestamps handled in SQL).

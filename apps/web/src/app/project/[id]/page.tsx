@@ -21,6 +21,8 @@ export default function ProjectPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [files, setFiles] = useState<FileRow[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<FileRow | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   async function loadFiles() {
     setMsg(null);
@@ -30,6 +32,10 @@ export default function ProjectPage() {
         { method: "GET" }
       );
       setFiles(res);
+      setSelected((prev) => {
+        if (prev && res.some((x) => x.id === prev.id)) return prev;
+        return res[0] ?? null;
+      });
     } catch (e: any) {
       setMsg(e.message || String(e));
     }
@@ -39,6 +45,29 @@ export default function ProjectPage() {
     loadFiles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadPreview() {
+      setPreviewUrl(null);
+      if (!selected) return;
+
+      // Only preview images + pdf
+      const mime = (selected.mime || "").toLowerCase();
+      if (!(mime.startsWith("image/") || mime === "application/pdf")) return;
+
+      try {
+        const res = await apiFetch<{ url: string }>(`/files/${selected.id}/presign-download`, {
+          method: "POST",
+        });
+        if (!cancelled) setPreviewUrl(res.url);
+      } catch {
+        if (!cancelled) setPreviewUrl(null);
+      }
+    }
+    loadPreview();
+    return () => { cancelled = true; };
+  }, [selected]);
 
   async function uploadFile(file: File) {
     setMsg(null);
@@ -105,7 +134,6 @@ export default function ProjectPage() {
     try {
       const res = await apiFetch<{ url: string }>(`/files/${fileId}/presign-download`, {
         method: "POST",
-        body: JSON.stringify({}),
       });
       window.open(res.url, "_blank", "noopener,noreferrer");
     } catch (e: any) {
@@ -172,49 +200,109 @@ export default function ProjectPage() {
           </button>
         </div>
 
-        <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-          {files.length === 0 ? (
-            <div style={{ opacity: 0.8 }}>No files yet.</div>
-          ) : (
-            files.map((f) => (
-              <div
-                key={f.id}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr auto",
-                  gap: 10,
-                  padding: 10,
-                  borderRadius: 12,
-                  border: "1px solid #30363d",
-                  background: "#0b1220",
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 700 }}>{f.name}</div>
-                  <div style={{ opacity: 0.75, fontSize: 12 }}>
-                    {f.kind} • {(f.size_bytes / (1024 * 1024)).toFixed(2)} MB
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
-                  <button
-                    onClick={() => downloadFile(f.id)}
-                    disabled={busyId === f.id}
+        <div
+          style={{
+            marginTop: 10,
+            display: "grid",
+            gridTemplateColumns: "1fr 360px",
+            gap: 12,
+            alignItems: "start",
+          }}
+        >
+          {/* List */}
+          <div style={{ display: "grid", gap: 8 }}>
+            {files.length === 0 ? (
+              <div style={{ opacity: 0.8 }}>No files yet.</div>
+            ) : (
+              files.map((f) => {
+                const isSel = selected?.id === f.id;
+                return (
+                  <div
+                    key={f.id}
+                    onClick={() => setSelected(f)}
                     style={{
-                      padding: "8px 12px",
+                      display: "grid",
+                      gridTemplateColumns: "1fr auto",
+                      gap: 10,
+                      padding: 10,
                       borderRadius: 12,
-                      border: "1px solid #30363d",
-                      background: "#1f6feb",
-                      color: "white",
-                      fontWeight: 800,
+                      border: isSel ? "1px solid #1f6feb" : "1px solid #30363d",
+                      background: isSel ? "#0b1b33" : "#0b1220",
+                      cursor: "pointer",
                     }}
                   >
-                    {busyId === f.id ? "..." : "Download"}
-                  </button>
-                </div>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{f.name}</div>
+                      <div style={{ opacity: 0.75, fontSize: 12 }}>
+                        {f.kind} • {(f.size_bytes / (1024 * 1024)).toFixed(2)} MB
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); downloadFile(f.id); }}
+                        disabled={busyId === f.id}
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #30363d",
+                          background: "#1f6feb",
+                          color: "white",
+                          fontWeight: 800,
+                        }}
+                      >
+                        {busyId === f.id ? "..." : "Download"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Preview */}
+          <div
+            style={{
+              border: "1px solid #30363d",
+              borderRadius: 12,
+              background: "#0b1220",
+              overflow: "hidden",
+            }}
+          >
+            <div style={{ padding: 10, borderBottom: "1px solid #30363d", fontWeight: 800 }}>
+              Preview
+              <div style={{ fontWeight: 400, opacity: 0.75, fontSize: 12, marginTop: 4 }}>
+                {selected ? selected.name : "Select a file"}
               </div>
-            ))
-          )}
+            </div>
+
+            <div style={{ padding: 10 }}>
+              {!selected ? (
+                <div style={{ opacity: 0.8 }}>Select a file from the list.</div>
+              ) : selected.mime?.toLowerCase().startsWith("image/") ? (
+                previewUrl ? (
+                  <img
+                    src={previewUrl}
+                    alt={selected.name}
+                    style={{ width: "100%", height: "auto", borderRadius: 10, display: "block" }}
+                  />
+                ) : (
+                  <div style={{ opacity: 0.8 }}>Loading preview…</div>
+                )
+              ) : selected.mime?.toLowerCase() === "application/pdf" ? (
+                previewUrl ? (
+                  <iframe src={`/api/files/${selected.id}/pdf`} style={{ width: "100%", height: 520, border: 0, borderRadius: 10 }} />
+
+                ) : (
+                  <div style={{ opacity: 0.8 }}>Loading preview…</div>
+                )
+              ) : (
+                <div style={{ opacity: 0.85 }}>
+                  Preview not available for this file type. Use <b>Download</b>.
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>
