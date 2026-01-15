@@ -579,11 +579,41 @@ async function openPreview(f: FileRow) {
                         onClick={async () => {
                           try {
                             const r = await apiFetch<{ url: string }>(`/files/${selectedFile.id}/presign-download`, { method: "POST" });
-                            window.open(r.url, "_blank", "noopener,noreferrer");
+
+                            const resp = await fetch("http://127.0.0.1:17832/open", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                api_base: "http://localhost:8000",
+                                token:
+                                  (typeof window !== "undefined" &&
+                                    (localStorage.getItem("access_token") ||
+                                      localStorage.getItem("token") ||
+                                      localStorage.getItem("auth_token"))) ||
+                                  null,
+                 // uses your existing token var
+                                file_id: selectedFile.id,
+                                filename: selectedFile.name,
+                                mime: selectedFile.mime || null,
+                                download_url: r.url,
+                                watch: true,                          // auto-upload when saved (if token exists)
+                              }),
+                            });
+
+                            if (!resp.ok) {
+                              const t = await resp.text();
+                              throw new Error(`Local helper error (${resp.status}): ${t}`);
+                            }
                           } catch (e: any) {
-                            setPreviewErr(e?.message || String(e));
+                            // fallback: still open in browser if helper isn't running
+                            setPreviewErr((e?.message || String(e)) + " | Start tools/open_helper.py then try again.");
+                            try {
+                              const r2 = await apiFetch<{ url: string }>(`/files/${selectedFile.id}/presign-download`, { method: "POST" });
+                              window.open(r2.url, "_blank", "noopener,noreferrer");
+                            } catch {}
                           }
                         }}
+
 
                         style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #30363d", background: "#1f6feb", color: "white", fontWeight: 900 }}
                     >
