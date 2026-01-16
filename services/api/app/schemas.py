@@ -79,6 +79,14 @@ class FileMetadataOut(BaseModel):
 class PresignDownloadResponse(BaseModel):
     url: str
 
+class FileVersionOut(BaseModel):
+    id: UUID
+    version_no: int
+    size_bytes: int | None = None
+    created_at: datetime | None = None
+    created_by: UUID | None = None
+
+
 # Locks
 class LockAcquireRequest(BaseModel):
     file_id: UUID

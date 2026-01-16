@@ -13,7 +13,7 @@ from ..db import get_db
 from ..models import User
 from ..schemas import (
     FileCreate, FileOut, InitiateUploadRequest, InitiateUploadResponse,
-    CompleteUploadRequest, FileMetadataOut, PresignDownloadResponse,
+    CompleteUploadRequest, FileMetadataOut, PresignDownloadResponse, FileVersionOut,
 )
 from ..deps import get_current_user
 from ..s3 import ensure_bucket, presign_put, presign_get
@@ -149,6 +149,39 @@ async def complete_upload(file_id: UUID, req: CompleteUploadRequest, db: AsyncSe
 
     # Return updated metadata
     return await file_metadata(file_id, db, user)
+@router.get("/{file_id}/versions", response_model=list[FileVersionOut])
+async def list_versions(file_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    result = await db.execute(text("""
+        SELECT id, version_no, size_bytes, created_at, created_by
+        FROM file_versions
+        WHERE file_id = :fid
+        ORDER BY version_no DESC
+    """), {"fid": str(file_id)})
+    rows = result.mappings().all()
+    return [FileVersionOut(**r) for r in rows]
+
+
+@router.post("/{file_id}/versions/{version_id}/presign-download", response_model=PresignDownloadResponse)
+async def presign_download_version(file_id: UUID, version_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    q = await db.execute(text("""
+        SELECT f.name, f.mime, v.object_key
+        FROM files f
+        JOIN file_versions v ON v.id = :vid AND v.file_id = f.id
+        WHERE f.id = :fid
+    """), {"fid": str(file_id), "vid": str(version_id)})
+    row = q.mappings().one_or_none()
+    if not row:
+        raise HTTPException(404, "Version not found")
+
+    filename = safe_name(row["name"] or "file")
+    mime = row.get("mime")
+
+    url = presign_get(
+        row["object_key"],
+        response_content_type=mime,
+        response_content_disposition=f'inline; filename="{filename}"',
+    )
+    return PresignDownloadResponse(url=url)
 
 @router.post("/{file_id}/presign-download", response_model=PresignDownloadResponse)
 async def presign_download(file_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
@@ -220,3 +253,34 @@ async def pdf_inline(file_id: UUID, db: AsyncSession = Depends(get_db), user: Us
     filename = safe_name(row["name"] or "file.pdf")
     headers = {"Content-Disposition": f'inline; filename="{filename}"'}
     return StreamingResponse(obj["Body"].iter_chunks(), media_type="application/pdf", headers=headers)
+@router.get("/{file_id}/versions")
+async def list_versions(file_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    result = await db.execute(text("""
+        SELECT id, version_no, object_key, size_bytes, created_at, created_by
+        FROM file_versions
+        WHERE file_id = :fid
+        ORDER BY version_no DESC
+    """), {"fid": str(file_id)})
+    return result.mappings().all()
+@router.post("/{file_id}/versions/{version_id}/presign-download", response_model=PresignDownloadResponse)
+async def presign_download_version(file_id: UUID, version_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    q = await db.execute(text("""
+        SELECT f.name, f.mime, v.object_key
+        FROM files f
+        JOIN file_versions v ON v.id = :vid AND v.file_id = f.id
+        WHERE f.id = :fid
+    """), {"fid": str(file_id), "vid": str(version_id)})
+    row = q.mappings().one_or_none()
+    if not row:
+        raise HTTPException(404, "Version not found")
+
+    filename = safe_name(row["name"] or "file")
+    mime = row.get("mime")
+
+    url = presign_get(
+        row["object_key"],
+        response_content_type=mime,
+        response_content_disposition=f'inline; filename="{filename}"',
+    )
+    return PresignDownloadResponse(url=url)
+
