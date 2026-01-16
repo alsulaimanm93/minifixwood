@@ -16,7 +16,7 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }),
       });
       localStorage.setItem("token", res.access_token);
-      window.location.href = "/current-projects";
+      window.location.href = "/projects";
     } catch (err: any) {
       setMsg(err.message || String(err));
     }

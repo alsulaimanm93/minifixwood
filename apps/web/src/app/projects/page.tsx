@@ -98,6 +98,9 @@ function fmtSize(bytes: number) {
 }
 
 function classifySection(f: FileRow): Exclude<SectionKey, "overview"> {
+  const k = (f.kind || "").toLowerCase();
+  if (k === "commercial" || k === "technical" || k === "images" || k === "cnc" || k === "materials") return k as any;
+
   const n = (f.name || "").toLowerCase();
   const { isCnc, isXlsx, isDocx, isImg, isPdf, isCsv } = previewKind(f.name || "");
 
@@ -145,6 +148,9 @@ export default function ProjectsWorkspace() {
   const [previewObjectUrl, setPreviewObjectUrl] = useState<string | null>(null);
   const [previewErr, setPreviewErr] = useState<string | null>(null);
   const [busyFileId, setBusyFileId] = useState<string | null>(null);
+
+  const [uploading, setUploading] = useState(false);
+  const [uploadErr, setUploadErr] = useState<string | null>(null);
 
   async function loadAll() {
     setErr(null);
@@ -194,6 +200,85 @@ export default function ProjectsWorkspace() {
     } catch (e: any) {
       setFilesErr(e?.message || String(e));
       setFiles([]);
+    }
+  }
+
+  async function uploadToSelectedProject(file: File) {
+    if (!selectedProjectId) return;
+    console.log("uploadToSelectedProject", { selectedProjectId, name: file.name, size: file.size, type: file.type });
+    setUploadErr(null);
+    setUploading(true);
+    setUploadErr(`Uploading: ${file.name}`);
+
+    try {
+      const inferredKind = classifySection({
+        id: "tmp",
+        project_id: selectedProjectId,
+        kind: "file",
+        name: file.name,
+        size_bytes: file.size,
+      } as any);
+
+      const uploadKind = (section === "overview" ? inferredKind : (section as any));
+
+      // 1) create DB file row
+      const created = await apiFetch<FileRow>("/files", {
+        method: "POST",
+        body: JSON.stringify({
+          project_id: selectedProjectId,
+          kind: uploadKind,
+          name: file.name,
+          mime: file.type || null,
+          size_bytes: file.size,
+        }),
+      });
+
+      // 2) presign PUT
+      const init = await apiFetch<{ object_key: string; url: string; headers: Record<string, string> }>(
+        `/files/${created.id}/versions/initiate-upload`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            filename: file.name,
+            mime: file.type || "application/octet-stream",
+            size_bytes: file.size,
+          }),
+        }
+      );
+
+      // 3) upload bytes to MinIO/S3
+      const putResp = await fetch(init.url, {
+        method: "PUT",
+        headers: init.headers || {},
+        body: file,
+      });
+
+      if (!putResp.ok) {
+        const t = await putResp.text().catch(() => "");
+        throw new Error(`Upload failed: ${putResp.status} ${putResp.statusText}${t ? ` - ${t.slice(0, 200)}` : ""}`);
+      }
+
+      const etag = putResp.headers.get("etag") || putResp.headers.get("ETag") || null;
+
+      // 4) complete upload => creates file_version + sets current
+      await apiFetch(`/files/${created.id}/versions/complete-upload`, {
+        method: "POST",
+        body: JSON.stringify({
+          object_key: init.object_key,
+          etag,
+          sha256: null,
+          size_bytes: file.size,
+        }),
+      });
+
+      setSection(uploadKind as any);
+      await loadFiles(selectedProjectId);
+      setUploadErr(null);
+
+    } catch (e: any) {
+      setUploadErr(e?.message || String(e));
+    } finally {
+      setUploading(false);
     }
   }
 
@@ -455,9 +540,9 @@ async function openPreview(f: FileRow) {
               </a>
             </div>
 
-            {(filesErr || previewErr) && (
+            {(filesErr || previewErr || uploadErr) && (
             <div style={{ color: "#ff7b72", marginTop: 12 }}>
-                {filesErr || previewErr}
+                {filesErr || previewErr || uploadErr}
             </div>
             )}
 
@@ -465,14 +550,68 @@ async function openPreview(f: FileRow) {
             {/* Files list */}
             <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minHeight: 520 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                <div style={{ fontWeight: 900, fontSize: 15 }}>Files â€¢ {SECTION_TITLES[section]}</div>
-                <button
+                <div style={{ fontWeight: 900, fontSize: 15 }}>Files • {SECTION_TITLES[section]}</div>
+
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input
+                    id="uploadInput"
+                    type="file"
+                    multiple
+                    style={{ position: "absolute", left: -9999, width: 1, height: 1, opacity: 0 }}
+                    onChange={(e) => {
+                      const fl = e.target.files;
+                      if (!fl || fl.length === 0) return;
+
+                      const arr = Array.from(fl);
+                      const picked = arr.map((x) => x.name).join(", ");
+                      setUploadErr(`Picked: ${picked}`);
+
+                      e.target.value = "";
+
+                      (async () => {
+                        for (const f of arr) {
+                          await uploadToSelectedProject(f);
+                        }
+                      })().catch((err: any) => {
+                        setUploadErr(err?.message || String(err));
+                      });
+                    }}
+                  />
+
+
+                  <label
+                    htmlFor="uploadInput"
+                    onClick={(e) => {
+                      if (!selectedProjectId || uploading) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }
+                    }}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 12,
+                      border: "1px solid #30363d",
+                      background: uploading ? "#111827" : "#1f6feb",
+                      color: "#e6edf3",
+                      fontWeight: 900,
+                      cursor: !selectedProjectId || uploading ? "not-allowed" : "pointer",
+                      opacity: !selectedProjectId || uploading ? 0.6 : 1,
+                      userSelect: "none",
+                      display: "inline-block",
+                    }}
+                  >
+                    {uploading ? "Uploading..." : "Upload"}
+                  </label>
+
+                  <button
                     onClick={() => (selectedProjectId ? loadFiles(selectedProjectId) : null)}
                     style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3" }}
-                >
+                  >
                     Refresh
-                </button>
+                  </button>
                 </div>
+                </div>
+
 
                 <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
                 {visibleFiles.length === 0 ? (

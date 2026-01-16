@@ -11,7 +11,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <div style={{ fontWeight: 800 }}>Workshop</div>
             <nav style={{ display: "flex", gap: 12 }}>
               <a href="/projects" style={{ color: "#e6edf3" }}>Projects</a>
-              <a href="/current-projects" style={{ color: "#e6edf3", opacity: 0.75 }}>Current (old)</a>
+              <a href="/projects/new" style={{ color: "#e6edf3", fontWeight: 800 }}>+ New Project</a>
               <a href="/login" style={{ color: "#e6edf3" }}>Login</a>
             </nav>
           </header>
