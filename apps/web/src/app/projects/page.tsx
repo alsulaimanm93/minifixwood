@@ -31,6 +31,14 @@ type FileRow = {
   updated_at?: string | null;
 };
 
+type FileVersionRow = {
+  id: string;
+  version_no: number;
+  size_bytes?: number | null;
+  created_at?: string | null;
+  created_by?: string | null;
+};
+
 
 type SectionKey = "overview" | "commercial" | "technical" | "images" | "cnc" | "materials";
 
@@ -148,6 +156,9 @@ export default function ProjectsWorkspace() {
   const [previewObjectUrl, setPreviewObjectUrl] = useState<string | null>(null);
   const [previewErr, setPreviewErr] = useState<string | null>(null);
   const [busyFileId, setBusyFileId] = useState<string | null>(null);
+  const [versions, setVersions] = useState<FileVersionRow[]>([]);
+  const [versionsErr, setVersionsErr] = useState<string | null>(null);
+  const [busyVer, setBusyVer] = useState<string | null>(null);
 
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
@@ -184,6 +195,31 @@ export default function ProjectsWorkspace() {
     loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadVersions() {
+      setVersionsErr(null);
+      setVersions([]);
+      if (!selectedFileId) return;
+
+      try {
+        const v = await apiFetch<FileVersionRow[]>(
+          `/files/${selectedFileId}/versions`,
+          { method: "GET" }
+        );
+        if (!cancelled) setVersions(v);
+      } catch (e: any) {
+        if (!cancelled) setVersionsErr(e?.message || String(e));
+      }
+    }
+
+    loadVersions();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedFileId]);
 
   async function loadFiles(projectId: string) {
     setFilesErr(null);
@@ -287,6 +323,7 @@ export default function ProjectsWorkspace() {
       setFiles([]);
       return;
     }
+
     loadFiles(selectedProjectId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjectId]);
@@ -321,6 +358,47 @@ export default function ProjectsWorkspace() {
     () => all.find((p) => p.id === selectedProjectId) || null,
     [all, selectedProjectId]
   );
+
+async function openVersion(versionId: string) {
+  if (!selectedFile) return;
+  setBusyVer(versionId);
+  setVersionsErr(null);
+
+  try {
+    const r = await apiFetch<{ url: string }>(
+      `/files/${selectedFile.id}/versions/${versionId}/presign-download`,
+      { method: "POST" }
+    );
+
+    const token =
+      (typeof window !== "undefined" &&
+        (localStorage.getItem("access_token") ||
+          localStorage.getItem("token") ||
+          localStorage.getItem("auth_token"))) ||
+      null;
+
+    const resp = await fetch("http://127.0.0.1:17832/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_base: "http://localhost:8000",
+        token,
+        file_id: selectedFile.id,
+        filename: selectedFile.name,
+        mime: selectedFile.mime || null,
+        download_url: r.url,
+        watch: false, // opening old versions shouldn’t auto-upload unless you want it
+      }),
+    });
+
+    if (!resp.ok) throw new Error(await resp.text());
+  } catch (e: any) {
+    setVersionsErr(e?.message || String(e));
+  } finally {
+    setBusyVer(null);
+  }
+}
+
 async function openPreview(f: FileRow) {
   setPreviewErr(null);
   setPreviewObjectUrl((p) => {
@@ -538,6 +616,55 @@ async function openPreview(f: FileRow) {
               >
                 Open project
               </a>
+            </div>
+            <div style={{ marginTop: 12, borderTop: "1px solid #30363d", paddingTop: 12 }}>
+              <div style={{ fontWeight: 900, marginBottom: 8 }}>Version history</div>
+
+              {versionsErr && <div style={{ color: "#ff7b72", marginBottom: 8 }}>{versionsErr}</div>}
+
+              {versions.length === 0 ? (
+                <div style={{ opacity: 0.75 }}>No previous versions yet.</div>
+              ) : (
+                <div style={{ display: "grid", gap: 8 }}>
+                  {versions.map((v) => (
+                    <div
+                      key={v.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 10,
+                        padding: 10,
+                        borderRadius: 12,
+                        border: "1px solid #30363d",
+                        background: "#0b1220",
+                      }}
+                    >
+                      <div style={{ opacity: 0.9 }}>
+                        <div style={{ fontWeight: 800 }}>v{v.version_no}</div>
+                        <div style={{ fontSize: 12, opacity: 0.75 }}>
+                          {v.created_at ? new Date(v.created_at).toLocaleString() : ""}
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => openVersion(v.id)}
+                        disabled={busyVer === v.id}
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #30363d",
+                          background: "#111827",
+                          color: "#e6edf3",
+                          fontWeight: 800,
+                        }}
+                      >
+                        {busyVer === v.id ? "..." : "Open"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {(filesErr || previewErr || uploadErr) && (
