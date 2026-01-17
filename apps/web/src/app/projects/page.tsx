@@ -159,6 +159,8 @@ export default function ProjectsWorkspace() {
   const [versions, setVersions] = useState<FileVersionRow[]>([]);
   const [versionsErr, setVersionsErr] = useState<string | null>(null);
   const [busyVer, setBusyVer] = useState<string | null>(null);
+  const [viewVersionId, setViewVersionId] = useState<string | null>(null);
+  const [viewVersionNo, setViewVersionNo] = useState<number | null>(null);
 
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
@@ -198,6 +200,10 @@ export default function ProjectsWorkspace() {
 
   useEffect(() => {
     let cancelled = false;
+
+    // switching files always goes back to latest preview
+    setViewVersionId(null);
+    setViewVersionNo(null);
 
     async function loadVersions() {
       setVersionsErr(null);
@@ -399,7 +405,7 @@ async function openVersion(versionId: string) {
   }
 }
 
-async function openPreview(f: FileRow) {
+async function openPreview(f: FileRow, versionId?: string | null) {
   setPreviewErr(null);
   setPreviewObjectUrl((p) => {
     if (p) URL.revokeObjectURL(p);
@@ -417,7 +423,11 @@ async function openPreview(f: FileRow) {
 
   setBusyFileId(f.id);
   try {
-    const r = await fetch(`/api/files/${f.id}/download?inline=1`, {
+    const url = versionId
+      ? `/api/files/${f.id}/versions/${versionId}/download?inline=1`
+      : `/api/files/${f.id}/download?inline=1`;
+
+    const r = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!r.ok) throw new Error(`Preview failed ${r.status}`);
@@ -428,6 +438,20 @@ async function openPreview(f: FileRow) {
   } finally {
     setBusyFileId(null);
   }
+}
+
+async function viewVersion(v: FileVersionRow) {
+  if (!selectedFile) return;
+  setViewVersionId(v.id);
+  setViewVersionNo(v.version_no);
+  await openPreview(selectedFile, v.id);
+}
+
+async function viewLatest() {
+  if (!selectedFile) return;
+  setViewVersionId(null);
+  setViewVersionNo(null);
+  await openPreview(selectedFile);
 }
 
   const visibleFiles = useMemo(() => {
@@ -617,55 +641,7 @@ async function openPreview(f: FileRow) {
                 Open project
               </a>
             </div>
-            <div style={{ marginTop: 12, borderTop: "1px solid #30363d", paddingTop: 12 }}>
-              <div style={{ fontWeight: 900, marginBottom: 8 }}>Version history</div>
-
-              {versionsErr && <div style={{ color: "#ff7b72", marginBottom: 8 }}>{versionsErr}</div>}
-
-              {versions.length === 0 ? (
-                <div style={{ opacity: 0.75 }}>No previous versions yet.</div>
-              ) : (
-                <div style={{ display: "grid", gap: 8 }}>
-                  {versions.map((v) => (
-                    <div
-                      key={v.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 10,
-                        padding: 10,
-                        borderRadius: 12,
-                        border: "1px solid #30363d",
-                        background: "#0b1220",
-                      }}
-                    >
-                      <div style={{ opacity: 0.9 }}>
-                        <div style={{ fontWeight: 800 }}>v{v.version_no}</div>
-                        <div style={{ fontSize: 12, opacity: 0.75 }}>
-                          {v.created_at ? new Date(v.created_at).toLocaleString() : ""}
-                        </div>
-                      </div>
-
-                      <button
-                        onClick={() => openVersion(v.id)}
-                        disabled={busyVer === v.id}
-                        style={{
-                          padding: "8px 12px",
-                          borderRadius: 12,
-                          border: "1px solid #30363d",
-                          background: "#111827",
-                          color: "#e6edf3",
-                          fontWeight: 800,
-                        }}
-                      >
-                        {busyVer === v.id ? "..." : "Open"}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            {/* Version history moved into Preview (collapsible) */}
 
             {(filesErr || previewErr || uploadErr) && (
             <div style={{ color: "#ff7b72", marginTop: 12 }}>
@@ -750,6 +726,8 @@ async function openPreview(f: FileRow) {
                         <button
                         key={f.id}
                         onClick={() => {
+                            setViewVersionId(null);
+                            setViewVersionNo(null);
                             setSelectedFileId(f.id);
                             openPreview(f);
                         }}
@@ -784,14 +762,121 @@ async function openPreview(f: FileRow) {
 
             {/* Preview */}
             <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minHeight: 520 }}>
-                <div style={{ fontWeight: 900, fontSize: 15 }}>Preview</div>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                  <div style={{ fontWeight: 900, fontSize: 15 }}>Preview</div>
+
+                  {viewVersionNo ? (
+                    <button
+                      onClick={() => viewLatest()}
+                      style={{
+                        padding: "6px 10px",
+                        borderRadius: 12,
+                        border: "1px solid #30363d",
+                        background: "#0f1623",
+                        color: "#e6edf3",
+                        fontWeight: 900,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Back to latest
+                    </button>
+                  ) : null}
+                </div>
+
+                {selectedFile && (
+                  <details
+                    style={{
+                      marginTop: 10,
+                      border: "1px solid #30363d",
+                      borderRadius: 14,
+                      background: "#0f1623",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <summary
+                      style={{
+                        cursor: "pointer",
+                        padding: "10px 12px",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 10,
+                        userSelect: "none",
+                      }}
+                    >
+                      <div style={{ fontWeight: 900 }}>History</div>
+                      <div style={{ opacity: 0.75, fontSize: 12, whiteSpace: "nowrap" }}>
+                        {viewVersionNo ? `Viewing v${viewVersionNo}` : `${versions.length} versions`}
+                      </div>
+                    </summary>
+
+                    <div style={{ padding: 10, display: "grid", gap: 8 }}>
+                      {versionsErr && <div style={{ color: "#ff7b72" }}>{versionsErr}</div>}
+
+                      {versions.length === 0 ? (
+                        <div style={{ opacity: 0.75 }}>No previous versions yet.</div>
+                      ) : (
+                        versions.map((v) => {
+                          const active = viewVersionId === v.id;
+                          return (
+                            <div
+                              key={v.id}
+                              onClick={() => viewVersion(v)}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 10,
+                                padding: 10,
+                                borderRadius: 12,
+                                border: active ? "1px solid #1f6feb" : "1px solid #30363d",
+                                background: active ? "#111827" : "#0b1220",
+                                cursor: "pointer",
+                              }}
+                            >
+                              <div style={{ opacity: 0.9, minWidth: 0 }}>
+                                <div style={{ fontWeight: 900, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                  v{v.version_no}
+                                </div>
+                                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                                  {v.created_at ? new Date(v.created_at).toLocaleString() : ""}
+                                </div>
+                              </div>
+
+                              <button
+                                onClick={(e) => { e.stopPropagation(); openVersion(v.id); }}
+                                disabled={busyVer === v.id}
+                                style={{
+                                  padding: "8px 12px",
+                                  borderRadius: 12,
+                                  border: "1px solid #30363d",
+                                  background: "#0b0f17",
+                                  color: "#e6edf3",
+                                  fontWeight: 900,
+                                }}
+                              >
+                                {busyVer === v.id ? "..." : "Open"}
+                              </button>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </details>
+                )}
 
                 {!selectedFile ? (
                 <div style={{ opacity: 0.75, marginTop: 10 }}>Select a file.</div>
                 ) : (
                 <>
                     <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
-                    <div style={{ fontWeight: 900, lineHeight: 1.25 }}>{selectedFile.name}</div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+                      <div style={{ fontWeight: 900, lineHeight: 1.25 }}>{selectedFile.name}</div>
+                      {viewVersionNo ? (
+                        <div style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid #30363d", background: "#0f1623", fontSize: 12, fontWeight: 900, opacity: 0.9 }}>
+                          v{viewVersionNo}
+                        </div>
+                      ) : null}
+                    </div>
                     <div style={{ opacity: 0.75, fontSize: 12, whiteSpace: "nowrap" }}>{fmtSize(selectedFile.size_bytes)}</div>
                     </div>
 

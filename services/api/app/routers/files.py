@@ -220,6 +220,29 @@ async def download_file(file_id: UUID, inline: int = 0, db: AsyncSession = Depen
     url = presign_get(row["object_key"])
     return RedirectResponse(url, status_code=302)
 
+@router.get("/{file_id}/versions/{version_id}/download")
+async def download_version(file_id: UUID, version_id: UUID, inline: int = 0, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    q = await db.execute(text("""
+        SELECT f.name, f.mime, v.object_key
+        FROM files f
+        JOIN file_versions v ON v.id = :vid AND v.file_id = f.id
+        WHERE f.id = :fid
+    """), {"fid": str(file_id), "vid": str(version_id)})
+    row = q.mappings().one_or_none()
+    if not row:
+        raise HTTPException(404, "Version not found")
+
+    filename = safe_name(row["name"] or "file")
+    mime = row.get("mime")
+    disp = f'inline; filename="{filename}"' if inline else f'attachment; filename="{filename}"'
+
+    url = presign_get(
+        row["object_key"],
+        response_content_type=mime,
+        response_content_disposition=disp,
+    )
+    return RedirectResponse(url, status_code=302)
+
 @router.get("/{file_id}/preview")
 async def preview_file(file_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     q = await db.execute(text("""
