@@ -39,3 +39,7 @@ __pycache__/
 workshop-cloud.bundle
 reset_pw.py
 login.json
+
+# bundles
+*.bundle
+
