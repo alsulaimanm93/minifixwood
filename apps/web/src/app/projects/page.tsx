@@ -358,6 +358,99 @@ export default function ProjectsWorkspace() {
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
 
+  // Project thumbnails (client-side mapping: projectId -> fileId)
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const [thumbPickProjectId, setThumbPickProjectId] = useState<string | null>(null);
+  const [thumbUploadingId, setThumbUploadingId] = useState<string | null>(null);
+  const thumbInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  // fileId -> objectURL (avoids auth issues with <img src="/api/...">)
+  const [thumbObjUrls, setThumbObjUrls] = useState<Record<string, string>>({});
+
+  // long-hover preview popup
+  const [thumbPreviewUrl, setThumbPreviewUrl] = useState<string | null>(null);
+  const hoverTimerRef = React.useRef<number | null>(null);
+
+  function readThumbs(): Record<string, string> {
+    if (typeof window === "undefined") return {};
+    try {
+      const raw = localStorage.getItem("minifix_thumbs_v1");
+      if (!raw) return {};
+      const obj = JSON.parse(raw);
+      if (!obj || typeof obj !== "object") return {};
+      return obj as Record<string, string>;
+    } catch {
+      return {};
+    }
+  }
+
+  function writeThumbs(next: Record<string, string>) {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem("minifix_thumbs_v1", JSON.stringify(next || {}));
+    } catch {}
+  }
+
+  useEffect(() => {
+    setThumbs(readThumbs());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function ensureThumbObjUrl(fileId: string) {
+    if (!fileId) return;
+    if (thumbObjUrls[fileId]) return;
+
+    try {
+      const token = getAuthToken();
+      const res = await fetch(`/api/files/${fileId}/download?inline=1`, {
+        method: "GET",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) return;
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+
+      setThumbObjUrls((prev) => ({ ...(prev || {}), [fileId]: url }));
+    } catch {
+      // ignore
+    }
+  }
+
+  // When thumbs change, load missing object URLs
+  useEffect(() => {
+    const ids = Object.values(thumbs || {}).filter(Boolean);
+    ids.forEach((id) => {
+      if (!thumbObjUrls[id]) void ensureThumbObjUrl(id);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thumbs]);
+
+  // Cleanup created object URLs on unmount
+  useEffect(() => {
+    return () => {
+      try {
+        Object.values(thumbObjUrls || {}).forEach((u) => {
+          try { URL.revokeObjectURL(u); } catch {}
+        });
+      } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function openThumbPicker(projectId: string) {
+    if (!projectId) return;
+    if (thumbUploadingId) return;
+
+    setThumbPickProjectId(projectId);
+
+    const el = thumbInputRef.current;
+    if (el) {
+      el.value = "";
+      el.click();
+    }
+  }
+
   async function loadAll() {
     setErr(null);
     try {
@@ -514,6 +607,83 @@ export default function ProjectsWorkspace() {
       setUploadErr(e?.message || String(e));
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function uploadThumbnailForProject(projectId: string, file: File) {
+    if (!projectId) return;
+
+    setUploadErr(null);
+    setThumbUploadingId(projectId);
+
+    try {
+      const uploadKind = "images";
+
+      // 1) create DB file row
+      const created = await apiFetch<FileRow>("/files", {
+        method: "POST",
+        body: JSON.stringify({
+          project_id: projectId,
+          kind: uploadKind,
+          name: file.name,
+          mime: file.type || null,
+          size_bytes: file.size,
+        }),
+      });
+
+      // 2) presign PUT
+      const init = await apiFetch<{ object_key: string; url: string; headers: Record<string, string> }>(
+        `/files/${created.id}/versions/initiate-upload`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            filename: file.name,
+            mime: file.type || "application/octet-stream",
+            size_bytes: file.size,
+          }),
+        }
+      );
+
+      // 3) upload bytes to MinIO/S3
+      const putResp = await fetch(init.url, {
+        method: "PUT",
+        headers: init.headers || {},
+        body: file,
+      });
+
+      if (!putResp.ok) {
+        const t = await putResp.text().catch(() => "");
+        throw new Error(`Upload failed: ${putResp.status} ${putResp.statusText}${t ? ` - ${t.slice(0, 200)}` : ""}`);
+      }
+
+      const etag = putResp.headers.get("etag") || putResp.headers.get("ETag") || null;
+
+      // 4) complete upload
+      await apiFetch(`/files/${created.id}/versions/complete-upload`, {
+        method: "POST",
+        body: JSON.stringify({
+          object_key: init.object_key,
+          etag,
+          sha256: null,
+          size_bytes: file.size,
+        }),
+      });
+
+      // Save thumbnail mapping (projectId -> fileId)
+      setThumbs((prev) => {
+        const next = { ...(prev || {}), [projectId]: String(created.id) };
+        writeThumbs(next);
+        return next;
+      });
+
+      // If you're currently inside that project, refresh its files list (optional but useful)
+      if (selectedProjectId === projectId) {
+        await loadFiles(projectId);
+      }
+    } catch (e: any) {
+      setUploadErr(e?.message || String(e));
+    } finally {
+      setThumbUploadingId(null);
     }
   }
 
@@ -825,6 +995,22 @@ This deletes the file and all its versions.`)
           }}
         />
 
+        <input
+          ref={thumbInputRef}
+          type="file"
+          accept="image/*"
+          style={{ display: "none" }}
+          onChange={async (e) => {
+            const pid = thumbPickProjectId;
+            setThumbPickProjectId(null);
+
+            const f = e.target.files?.[0];
+            if (!pid || !f) return;
+
+            await uploadThumbnailForProject(pid, f);
+          }}
+        />
+
         {err && <div style={{ color: "#ff7b72", marginTop: 10 }}>{err}</div>}
 
         <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -861,6 +1047,7 @@ This deletes the file and all its versions.`)
                   ) : (
                     items.map((p) => {
                       const selected = p.id === selectedProjectId;
+                      const thumbId = thumbs[p.id] || null;
                       return (
                         <button
                           key={p.id}
@@ -885,10 +1072,68 @@ This deletes the file and all its versions.`)
                             userSelect: "none",
                           }}
                         >
-                          <div style={{ fontWeight: 900, lineHeight: 1.2, fontSize: 14 }}>{p.name}</div>
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 4, opacity: 0.75, fontSize: 12 }}>
-                            <div>P{p.priority}</div>
-                            <div style={{ whiteSpace: "nowrap" }}>{fmtUpdatedAt(p.updated_at)}</div>
+                          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                            <div
+                              onPointerDown={(e) => { e.stopPropagation(); }}
+                              onMouseEnter={() => {
+                                if (!thumbId) return;
+                                const url = thumbObjUrls[thumbId];
+                                if (!url) {
+                                  void ensureThumbObjUrl(thumbId);
+                                  return;
+                                }
+                                if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
+                                hoverTimerRef.current = window.setTimeout(() => {
+                                  setThumbPreviewUrl(url);
+                                }, 450);
+                              }}
+                              onMouseLeave={() => {
+                                if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
+                                hoverTimerRef.current = null;
+                                setThumbPreviewUrl(null);
+                              }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openThumbPicker(p.id);
+                              }}
+                              title={thumbId ? "Change thumbnail" : "Add thumbnail"}
+                              style={{
+                                width: 44,
+                                height: 44,
+                                borderRadius: 12,
+                                border: "1px solid #30363d",
+                                background: "#0b0f17",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                overflow: "hidden",
+                                flex: "0 0 auto",
+                                cursor: "pointer",
+                              }}
+                            >
+                              {thumbUploadingId === p.id ? (
+                                <div style={{ opacity: 0.8, fontWeight: 900 }}>...</div>
+                              ) : thumbId ? (
+                                <img
+                                  src={thumbObjUrls[thumbId] || ""}
+                                  alt=""
+                                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                                  onLoad={() => {}}
+                                />
+                              ) : (
+                                <div style={{ fontSize: 20, fontWeight: 950, opacity: 0.85 }}>+</div>
+                              )}
+                            </div>
+
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <div style={{ fontWeight: 900, lineHeight: 1.2, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {p.name}
+                              </div>
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 4, opacity: 0.75, fontSize: 12 }}>
+                                <div>P{p.priority}</div>
+                                <div style={{ whiteSpace: "nowrap" }}>{fmtUpdatedAt(p.updated_at)}</div>
+                              </div>
+                            </div>
                           </div>
                         </button>
                       );
@@ -900,6 +1145,48 @@ This deletes the file and all its versions.`)
           })}
         </div>
       </div>
+
+      {/* Thumbnail preview popup (long hover) */}
+      {thumbPreviewUrl ? (
+        <div
+          onMouseDown={() => setThumbPreviewUrl(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 12000,
+            background: "rgba(0,0,0,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: 820,
+              width: "100%",
+              borderRadius: 16,
+              border: "1px solid #30363d",
+              background: "#0b0f17",
+              padding: 12,
+              boxShadow: "0 18px 50px rgba(0,0,0,0.55)",
+            }}
+          >
+            <img
+              src={thumbPreviewUrl}
+              alt=""
+              style={{
+                width: "100%",
+                maxHeight: "70vh",
+                objectFit: "contain",
+                display: "block",
+                borderRadius: 12,
+              }}
+            />
+          </div>
+        </div>
+      ) : null}
 
       {/* Drag ghost */}
       {dragging ? (
