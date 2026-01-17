@@ -1,4 +1,5 @@
-﻿"use client";
+﻿=== apps/web/src/app/projects/page.tsx ===
+"use client";
 
 import React, { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
@@ -148,72 +149,6 @@ export default function ProjectsWorkspace() {
   const [projQ, setProjQ] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [section, setSection] = useState<SectionKey>("overview");
-
-  const [newOpen, setNewOpen] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newErr, setNewErr] = useState<string | null>(null);
-  const [newBusy, setNewBusy] = useState(false);
-
-  async function createNewProject() {
-    const name = (newName || "").trim();
-    if (!name) {
-      setNewErr("Project name is required.");
-      return;
-    }
-
-    setNewErr(null);
-    setNewBusy(true);
-    try {
-      const created = await apiFetch<Project>("/projects", {
-        method: "POST",
-        body: JSON.stringify({
-          name,
-          status: "under_preparation", // server enforces too
-          priority: 0,
-          project_no: null,
-          seed_templates: true,
-        }),
-      });
-
-      setNewOpen(false);
-      setNewName("");
-      await loadAll();
-      setSelectedProjectId(String(created.id));
-      setSection("overview");
-    } catch (e: any) {
-      setNewErr(e?.message || String(e));
-    } finally {
-      setNewBusy(false);
-    }
-  }
-
-  async function moveProjectTo(projectId: string, nextStatus: Status) {
-    const p = all.find((x) => x.id === projectId);
-    if (!p) return;
-    if (p.status === nextStatus) return;
-
-    const ok =
-      typeof window !== "undefined"
-        ? window.confirm(`Move "${p.name}" to "${STATUS_TITLES[nextStatus]}"?`)
-        : false;
-    if (!ok) return;
-
-    try {
-      await apiFetch<Project>(`/projects/${projectId}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          name: p.name,
-          status: nextStatus,
-          priority: p.priority ?? 0,
-          project_no: p.project_no ?? null,
-          seed_templates: false,
-        }),
-      });
-      await loadAll();
-    } catch (e: any) {
-      setErr(e?.message || String(e));
-    }
-  }
 
   const [files, setFiles] = useState<FileRow[]>([]);
   const [filesErr, setFilesErr] = useState<string | null>(null);
@@ -663,29 +598,12 @@ This deletes the file and all its versions.`)
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
           <div style={{ fontWeight: 950, fontSize: 16 }}>Projects</div>
-
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button
-              onClick={() => { setNewErr(null); setNewOpen(true); }}
-              style={{
-                padding: "8px 12px",
-                borderRadius: 12,
-                border: "1px solid #30363d",
-                background: "#1f6feb",
-                color: "#e6edf3",
-                fontWeight: 900,
-              }}
-            >
-              + New
-            </button>
-
-            <button
-              onClick={loadAll}
-              style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
-            >
-              Refresh
-            </button>
-          </div>
+          <button
+            onClick={loadAll}
+            style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
+          >
+            Refresh
+          </button>
         </div>
 
         <input
@@ -710,17 +628,7 @@ This deletes the file and all its versions.`)
           {STATUS_ORDER.map((st) => {
             const items = grouped[st] || [];
             return (
-              <details
-                key={st}
-                open
-                onDragOver={(e) => { e.preventDefault(); }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const pid = e.dataTransfer.getData("text/project_id");
-                  if (pid) moveProjectTo(pid, st);
-                }}
-                style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17" }}
-              >
+              <details key={st} open style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17" }}>
                 <summary style={{ cursor: "pointer", padding: "10px 10px", display: "flex", justifyContent: "space-between", userSelect: "none" }}>
                   <div style={{ fontWeight: 900 }}>{STATUS_TITLES[st]}</div>
                   <div style={{ opacity: 0.8, fontSize: 12 }}>{items.length}</div>
@@ -735,11 +643,6 @@ This deletes the file and all its versions.`)
                       return (
                         <button
                           key={p.id}
-                          draggable
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData("text/project_id", p.id);
-                            e.dataTransfer.effectAllowed = "move";
-                          }}
                           onClick={() => {
                             setSelectedProjectId(p.id);
                             setSection("overview");
@@ -1203,103 +1106,6 @@ This deletes the file and all its versions.`)
     </div>
 
 
-      {newOpen && (
-        <div
-          onClick={() => { if (!newBusy) { setNewOpen(false); setNewErr(null); } }}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.65)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 16,
-            zIndex: 9999,
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              width: "min(560px, 100%)",
-              border: "1px solid #30363d",
-              borderRadius: 16,
-              background: "#0b0f17",
-              padding: 14,
-            }}
-          >
-            <div style={{ fontWeight: 950, fontSize: 16 }}>New project</div>
-            <div style={{ opacity: 0.75, fontSize: 12, marginTop: 4 }}>
-              It will always be created in <span style={{ fontWeight: 900 }}>Under Preparation</span>.
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-              <input
-                autoFocus
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    if (!newBusy) { setNewOpen(false); setNewErr(null); }
-                  }
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    if (!newBusy) createNewProject();
-                  }
-                }}
-                placeholder="Project name"
-                style={{
-                  width: "100%",
-                  padding: 10,
-                  borderRadius: 12,
-                  border: "1px solid #30363d",
-                  background: "#0f1623",
-                  color: "#e6edf3",
-                  fontSize: 14,
-                }}
-              />
-            </div>
-
-            {newErr ? <div style={{ color: "#ff7b72", marginTop: 10 }}>{newErr}</div> : null}
-
-            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 10 }}>
-              <button
-                onClick={() => { if (!newBusy) { setNewOpen(false); setNewErr(null); } }}
-                disabled={newBusy}
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: 12,
-                  border: "1px solid #30363d",
-                  background: "#0f1623",
-                  color: "#e6edf3",
-                  fontWeight: 900,
-                  opacity: newBusy ? 0.6 : 1,
-                  cursor: newBusy ? "not-allowed" : "pointer",
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => createNewProject()}
-                disabled={newBusy}
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: 12,
-                  border: "1px solid #30363d",
-                  background: "#1f6feb",
-                  color: "white",
-                  fontWeight: 900,
-                  opacity: newBusy ? 0.6 : 1,
-                  cursor: newBusy ? "not-allowed" : "pointer",
-                }}
-              >
-                {newBusy ? "Creating..." : "Create"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {renameOpen && selectedFile && (
         <div
           onClick={() => {
@@ -1431,3 +1237,394 @@ This deletes the file and all its versions.`)
   );
 }
 
+
+=== services/api/app/routers/projects.py ===
+from __future__ import annotations
+
+import hashlib
+import mimetypes
+import re
+import uuid
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, text
+from uuid import UUID
+
+from ..core.config import settings
+from ..db import get_db
+from ..models import Project, User
+from ..schemas import ProjectCreate, ProjectOut
+from ..deps import get_current_user
+from ..s3 import ensure_bucket, s3_internal_client
+from . import _audit
+
+router = APIRouter(prefix="/projects", tags=["projects"])
+
+
+def safe_name(name: str) -> str:
+    name = name.strip().replace("\\", "/").split("/")[-1]
+    name = re.sub(r"[^a-zA-Z0-9._ -]+", "_", name)
+    return name[:200] if len(name) > 200 else name
+
+
+def _guess_mime(filename: str) -> str:
+    ext = filename.lower().split(".")[-1] if "." in filename else ""
+    # mimetypes is often missing office types on Linux containers
+    override = {
+        "pdf": "application/pdf",
+        "doc": "application/msword",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls": "application/vnd.ms-excel",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "webp": "image/webp",
+    }
+    if ext in override:
+        return override[ext]
+
+    mt, _ = mimetypes.guess_type(filename)
+    return mt or "application/octet-stream"
+
+
+def _template_root() -> Path:
+    # app/routers/projects.py -> app/
+    return Path(__file__).resolve().parents[1] / "templates" / "project_default"
+
+
+def _kind_from_top_folder(top: str) -> str | None:
+    t = (top or "").strip().lower()
+
+    # common naming styles + your exact folder name from the template zip
+    if t in {"commercial", "invoices", "invoice", "contracts", "contract", "invoices & contracts", "invoices & contract", "invoices and contracts"}:
+        return "commercial"
+
+    if t in {"technical", "tech"}:
+        return "technical"
+
+    if t in {"cnc", "cam", "toolpath"}:
+        return "cnc"
+
+    if t in {"images", "image", "photos", "photo"}:
+        return "images"
+
+    if t in {"materials", "material", "bom"}:
+        return "materials"
+
+    # fallback: if people rename folder but it still contains keywords
+    if "invoice" in t or "contract" in t or "quotation" in t or "quote" in t:
+        return "commercial"
+
+    return None
+
+
+async def seed_project_templates(project_id: UUID, db: AsyncSession, user: User) -> dict:
+    root = _template_root()
+    if not root.exists():
+        return {"created": 0, "skipped": 0, "reason": f"template folder not found: {root}"}
+
+    ensure_bucket()
+    s3 = s3_internal_client()
+
+    created = 0
+    skipped = 0
+
+    try:
+        for p in sorted(root.rglob("*")):
+            if not p.is_file():
+                continue
+
+            rel = p.relative_to(root)
+            # ignore hidden / keep files
+            if rel.name.startswith(".") or rel.name.lower() in {".keep", "thumbs.db", ".ds_store"}:
+                continue
+
+            top = rel.parts[0] if rel.parts else ""
+            kind = _kind_from_top_folder(top)
+            if not kind:
+                # if someone drops a file directly under root, ignore it
+                continue
+
+            display_name = safe_name(rel.name)
+
+            # idempotent: skip if same name+kind already exists in this project
+            exists = await db.execute(text("""
+                SELECT id
+                FROM files
+                WHERE project_id = :pid AND kind = :kind AND name = :name
+                LIMIT 1
+            """), {"pid": str(project_id), "kind": kind, "name": display_name})
+
+            if exists.mappings().one_or_none():
+                skipped += 1
+                continue
+
+            data = p.read_bytes()
+            size_bytes = len(data)
+            sha256 = hashlib.sha256(data).hexdigest()
+            mime = _guess_mime(display_name)
+
+            # create file row
+            f_ins = await db.execute(text("""
+                INSERT INTO files (project_id, kind, name, mime, size_bytes, created_by, created_at, updated_at)
+                VALUES (:project_id, :kind, :name, :mime, :size_bytes, :created_by, now(), now())
+                RETURNING id
+            """), {
+                "project_id": str(project_id),
+                "kind": kind,
+                "name": display_name,
+                "mime": mime,
+                "size_bytes": size_bytes,
+                "created_by": str(user.id),
+            })
+            fid = f_ins.mappings().one()["id"]
+
+            # upload to S3
+            upid = uuid.uuid4().hex
+            object_key = f"files/{fid}/seed/{upid}/{safe_name(display_name)}"
+            s3.put_object(
+                Bucket=settings.s3_bucket,
+                Key=object_key,
+                Body=data,
+                ContentType=mime,
+            )
+
+            # create version 1
+            v_ins = await db.execute(text("""
+                INSERT INTO file_versions (file_id, version_no, object_key, etag, sha256, size_bytes, created_by, created_at)
+                VALUES (:file_id, 1, :object_key, NULL, :sha256, :size_bytes, :created_by, now())
+                RETURNING id
+            """), {
+                "file_id": str(fid),
+                "object_key": object_key,
+                "sha256": sha256,
+                "size_bytes": size_bytes,
+                "created_by": str(user.id),
+            })
+            ver_id = v_ins.mappings().one()["id"]
+
+            await db.execute(text("""
+                UPDATE files
+                SET current_version_id = :ver_id,
+                    size_bytes = :size_bytes,
+                    updated_at = now()
+                WHERE id = :fid
+            """), {"ver_id": str(ver_id), "size_bytes": size_bytes, "fid": str(fid)})
+
+            created += 1
+
+        await db.commit()
+        return {"created": created, "skipped": skipped}
+    except Exception:
+        await db.rollback()
+        raise
+
+
+@router.get("", response_model=list[ProjectOut])
+async def list_projects(status: str = "current", db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    q = await db.execute(select(Project).where(Project.status == status).order_by(Project.updated_at.desc()))
+    rows = q.scalars().all()
+    return [ProjectOut(
+        id=p.id, project_no=p.project_no, name=p.name, status=p.status, priority=p.priority, updated_at=p.updated_at
+    ) for p in rows]
+
+
+@router.get("/all", response_model=list[ProjectOut])
+async def list_projects_all(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    q = await db.execute(select(Project).order_by(Project.updated_at.desc()))
+    rows = q.scalars().all()
+    return [ProjectOut(
+        id=p.id, project_no=p.project_no, name=p.name, status=p.status, priority=p.priority, updated_at=p.updated_at
+    ) for p in rows]
+
+
+@router.post("", response_model=ProjectOut)
+async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    # Use raw SQL to keep it simple and explicit (timestamps handled in SQL).
+    result = await db.execute(text("""
+        INSERT INTO projects (project_no, name, status, priority, created_by, created_at, updated_at)
+        VALUES (:project_no, :name, :status, :priority, :created_by, now(), now())
+        RETURNING id, project_no, name, status, priority, updated_at
+    """), {
+        "project_no": req.project_no,
+        "name": req.name,
+        "status": req.status,
+        "priority": req.priority,
+        "created_by": str(user.id),
+    })
+    row = result.mappings().one()
+    await db.commit()
+    pid = row["id"]
+
+    seed_result: dict | None = None
+    if getattr(req, "seed_templates", True):
+        try:
+            seed_result = await seed_project_templates(pid, db, user)
+        except Exception as e:
+            await db.rollback()
+            # keep project creation working even if templates fail
+            seed_result = {"created": 0, "skipped": 0, "error": str(e)}
+
+    await _audit.write(db, user.id, "project.create", "project", pid, meta={"name": req.name, "status": req.status, "seed": seed_result})
+    return ProjectOut(**row)
+
+
+@router.post("/{project_id}/seed-templates")
+async def seed_templates(project_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    # Optional helper for when you change the template folder later.
+    # Safe to run multiple times (it skips name+kind duplicates).
+    q = await db.execute(text("SELECT id FROM projects WHERE id=:id"), {"id": str(project_id)})
+    if not q.mappings().one_or_none():
+        raise HTTPException(404, "Project not found")
+
+    res = await seed_project_templates(project_id, db, user)
+    await _audit.write(db, user.id, "project.seed_templates", "project", project_id, meta=res)
+    return {"ok": True, **res}
+
+
+@router.patch("/{project_id}", response_model=ProjectOut)
+async def update_project(project_id: UUID, req: ProjectCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    result = await db.execute(text("""
+        UPDATE projects
+        SET project_no=:project_no, name=:name, status=:status, priority=:priority, updated_at=now()
+        WHERE id=:id
+        RETURNING id, project_no, name, status, priority, updated_at
+    """), {
+        "id": str(project_id),
+        "project_no": req.project_no,
+        "name": req.name,
+        "status": req.status,
+        "priority": req.priority,
+    })
+    row = result.mappings().one()
+    await db.commit()
+    await _audit.write(db, user.id, "project.update", "project", project_id, meta={"name": req.name, "status": req.status})
+    return ProjectOut(**row)
+
+=== services/api/app/schemas.py ===
+from pydantic import BaseModel, Field
+from typing import Optional, Any, Dict, List
+from uuid import UUID
+from datetime import datetime
+
+# Auth
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+class MeResponse(BaseModel):
+    id: UUID
+    email: str
+    name: str
+    role: str
+
+# Projects
+class ProjectCreate(BaseModel):
+    name: str
+    status: str = "current"
+    priority: int = 0
+    project_no: Optional[int] = None
+    seed_templates: bool = True
+
+
+class ProjectOut(BaseModel):
+    id: UUID
+    project_no: Optional[int]
+    name: str
+    status: str
+    priority: int
+    updated_at: datetime
+
+# Files
+class FileCreate(BaseModel):
+    project_id: Optional[UUID] = None
+    kind: str
+    name: str
+    mime: Optional[str] = None
+    size_bytes: int = 0
+
+class FileRenameRequest(BaseModel):
+    name: str
+
+class FileOut(BaseModel):
+    id: UUID
+    project_id: Optional[UUID]
+    kind: str
+    name: str
+    mime: Optional[str]
+    size_bytes: int
+    current_version_id: Optional[UUID]
+
+class InitiateUploadRequest(BaseModel):
+    mime: Optional[str] = None
+    size_bytes: int
+    filename: str
+
+class InitiateUploadResponse(BaseModel):
+    upload_type: str = "single"
+    object_key: str
+    url: str
+    headers: Dict[str, str] = Field(default_factory=dict)
+
+class CompleteUploadRequest(BaseModel):
+    object_key: str
+    size_bytes: int
+    etag: Optional[str] = None
+    sha256: Optional[str] = None
+
+class FileMetadataOut(BaseModel):
+    file_id: UUID
+    current_version_id: Optional[UUID]
+    version_no: Optional[int]
+    etag: Optional[str]
+    last_modified: Optional[datetime]
+    s3_version_id: Optional[str]
+    size_bytes: Optional[int]
+
+class PresignDownloadResponse(BaseModel):
+    url: str
+
+class FileVersionOut(BaseModel):
+    id: UUID
+    version_no: int
+    size_bytes: int | None = None
+    created_at: datetime | None = None
+    created_by: UUID | None = None
+
+
+# Locks
+class LockAcquireRequest(BaseModel):
+    file_id: UUID
+    client_id: str
+
+class LockOut(BaseModel):
+    id: UUID
+    file_id: UUID
+    locked_by: UUID
+    expires_at: datetime
+    active: bool
+
+class LockReleaseRequest(BaseModel):
+    lock_id: UUID
+
+# Jobs
+class JobCreate(BaseModel):
+    type: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+class JobOut(BaseModel):
+    id: UUID
+    type: str
+    status: str
+    progress_pct: int
+    stage: Optional[str]
+    result: Dict[str, Any]
+    error: Optional[str]
+    updated_at: datetime

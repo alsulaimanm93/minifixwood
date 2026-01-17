@@ -202,6 +202,9 @@ async def list_projects_all(db: AsyncSession = Depends(get_db), user: User = Dep
 
 @router.post("", response_model=ProjectOut)
 async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    # Always create new projects under_preparation (ignore any client-sent status).
+    forced_status = "under_preparation"
+
     # Use raw SQL to keep it simple and explicit (timestamps handled in SQL).
     result = await db.execute(text("""
         INSERT INTO projects (project_no, name, status, priority, created_by, created_at, updated_at)
@@ -210,7 +213,7 @@ async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db),
     """), {
         "project_no": req.project_no,
         "name": req.name,
-        "status": req.status,
+        "status": forced_status,
         "priority": req.priority,
         "created_by": str(user.id),
     })
