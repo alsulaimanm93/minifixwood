@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Any, Dict, List
 from uuid import UUID
-from datetime import datetime
+from datetime import date, datetime
 
 # Auth
 class LoginRequest(BaseModel):
@@ -27,6 +27,26 @@ class ProjectCreate(BaseModel):
     seed_templates: bool = True
 
 
+class ProjectUpdate(BaseModel):
+    # All optional; missing fields are not modified.
+    project_no: Optional[int] = None
+    name: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[int] = None
+
+    payment_date: Optional[date] = None
+    max_days_to_finish: Optional[int] = None
+
+    total_amount: Optional[float] = None
+    paid_amount: Optional[float] = None
+
+    inventory_state: Optional[dict] = None
+    missing_items: Optional[str] = None
+    inventory_notes: Optional[str] = None
+
+
+
+
 class ProjectOut(BaseModel):
     id: UUID
     project_no: Optional[int]
@@ -34,6 +54,18 @@ class ProjectOut(BaseModel):
     status: str
     priority: int
     updated_at: datetime
+
+    # Payments / delivery
+    eta_date: Optional[date] = None
+    total_amount: Optional[float] = None
+    paid_amount: Optional[float] = None
+    payment_date: Optional[date] = None
+    max_days_to_finish: Optional[int] = None
+
+    # Inventory (lightweight now)
+    inventory_state: Dict[str, Any] = Field(default_factory=dict)
+    missing_items: Optional[str] = None
+    inventory_notes: Optional[str] = None
 
 # Files
 class FileCreate(BaseModel):

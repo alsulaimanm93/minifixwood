@@ -14,13 +14,29 @@ from uuid import UUID
 from ..core.config import settings
 from ..db import get_db
 from ..models import Project, User
-from ..schemas import ProjectCreate, ProjectOut
+from datetime import date, timedelta
+
+from ..schemas import ProjectCreate, ProjectUpdate, ProjectOut
 from ..deps import get_current_user
 from ..s3 import ensure_bucket, s3_internal_client
 from . import _audit
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
+def _calc_eta_skip_fridays(payment_date: date | None, max_days_to_finish: int | None) -> date | None:
+    """Compute ETA by adding working days, skipping Fridays only."""
+    if not payment_date or not max_days_to_finish or max_days_to_finish <= 0:
+        return None
+
+    d = payment_date
+    remaining = max_days_to_finish
+    while remaining > 0:
+        d = d + timedelta(days=1)
+        # Monday=0 ... Friday=4
+        if d.weekday() == 4:
+            continue
+        remaining -= 1
+    return d
 
 def safe_name(name: str) -> str:
     name = name.strip().replace("\\", "/").split("/")[-1]
@@ -52,6 +68,18 @@ def _guess_mime(filename: str) -> str:
 def _template_root() -> Path:
     # app/routers/projects.py -> app/
     return Path(__file__).resolve().parents[1] / "templates" / "project_default"
+
+def _calc_eta_skip_fridays(payment_date: date | None, max_days_to_finish: int | None) -> date | None:
+    if not payment_date or not max_days_to_finish or max_days_to_finish <= 0:
+        return None
+    d = payment_date
+    remaining = max_days_to_finish
+    while remaining > 0:
+        d = d + timedelta(days=1)
+        if d.weekday() == 4:  # Friday
+            continue
+        remaining -= 1
+    return d
 
 
 def _kind_from_top_folder(top: str) -> str | None:
@@ -209,7 +237,11 @@ async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db),
     result = await db.execute(text("""
         INSERT INTO projects (project_no, name, status, priority, created_by, created_at, updated_at)
         VALUES (:project_no, :name, :status, :priority, :created_by, now(), now())
-        RETURNING id, project_no, name, status, priority, updated_at
+        RETURNING
+          id, project_no, name, status, priority, updated_at,
+          payment_date, max_days_to_finish, eta_date,
+          total_amount, paid_amount,
+          inventory_state, missing_items, inventory_notes
     """), {
         "project_no": req.project_no,
         "name": req.name,
@@ -248,20 +280,88 @@ async def seed_templates(project_id: UUID, db: AsyncSession = Depends(get_db), u
 
 
 @router.patch("/{project_id}", response_model=ProjectOut)
-async def update_project(project_id: UUID, req: ProjectCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+async def update_project(project_id: UUID, req: ProjectUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    # load current row first so we can do "partial updates" safely
+    cur_res = await db.execute(text("""
+        SELECT
+          id, project_no, name, status, priority, updated_at,
+          payment_date, max_days_to_finish, eta_date,
+          total_amount, paid_amount,
+          inventory_state, missing_items, inventory_notes
+        FROM projects
+        WHERE id=:id
+    """), {"id": str(project_id)})
+    cur = cur_res.mappings().one()
+
+    # choose next values (keep old when req field is None)
+    next_project_no = cur["project_no"] if req.project_no is None else req.project_no
+    next_name = cur["name"] if req.name is None else req.name
+    next_status = cur["status"] if req.status is None else req.status
+    next_priority = cur["priority"] if req.priority is None else req.priority
+
+    next_payment_date = cur["payment_date"] if req.payment_date is None else req.payment_date
+    next_max_days = cur["max_days_to_finish"] if req.max_days_to_finish is None else req.max_days_to_finish
+
+    next_total = cur["total_amount"] if req.total_amount is None else req.total_amount
+    next_paid = cur["paid_amount"] if req.paid_amount is None else req.paid_amount
+
+    next_inventory_state = cur["inventory_state"] if req.inventory_state is None else req.inventory_state
+    next_missing_items = cur["missing_items"] if req.missing_items is None else req.missing_items
+    next_inventory_notes = cur["inventory_notes"] if req.inventory_notes is None else req.inventory_notes
+
+    # compute ETA (skip Fridays only)
+    eta = _calc_eta_skip_fridays(next_payment_date, next_max_days)
+
     result = await db.execute(text("""
         UPDATE projects
-        SET project_no=:project_no, name=:name, status=:status, priority=:priority, updated_at=now()
+        SET
+          project_no=:project_no,
+          name=:name,
+          status=:status,
+          priority=:priority,
+
+          payment_date=:payment_date,
+          max_days_to_finish=:max_days_to_finish,
+          eta_date=:eta_date,
+
+          total_amount=:total_amount,
+          paid_amount=:paid_amount,
+
+          inventory_state=:inventory_state,
+          missing_items=:missing_items,
+          inventory_notes=:inventory_notes,
+
+          updated_at=now()
         WHERE id=:id
-        RETURNING id, project_no, name, status, priority, updated_at
+        RETURNING
+          id, project_no, name, status, priority, updated_at,
+          payment_date, max_days_to_finish, eta_date,
+          total_amount, paid_amount,
+          inventory_state, missing_items, inventory_notes
     """), {
         "id": str(project_id),
-        "project_no": req.project_no,
-        "name": req.name,
-        "status": req.status,
-        "priority": req.priority,
+
+        "project_no": next_project_no,
+        "name": next_name,
+        "status": next_status,
+        "priority": next_priority,
+
+        "payment_date": next_payment_date,
+        "max_days_to_finish": next_max_days,
+        "eta_date": eta,
+
+        "total_amount": next_total,
+        "paid_amount": next_paid,
+
+        "inventory_state": next_inventory_state,
+        "missing_items": next_missing_items,
+        "inventory_notes": next_inventory_notes,
     })
     row = result.mappings().one()
     await db.commit()
-    await _audit.write(db, user.id, "project.update", "project", project_id, meta={"name": req.name, "status": req.status})
+
+    await _audit.write(
+        db, user.id, "project.update", "project", project_id,
+        meta={"name": row.get("name"), "status": row.get("status")}
+    )
     return ProjectOut(**row)
