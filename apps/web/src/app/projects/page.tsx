@@ -736,17 +736,18 @@ This deletes the file and all its versions.`)
               <details
                 key={st}
                 open
-                onDragOver={onDragOverStatus}
-                onDrop={(e) => onDropOnStatus(e, st)}
                 style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17" }}
-
               >
                 <summary style={{ cursor: "pointer", padding: "10px 10px", display: "flex", justifyContent: "space-between", userSelect: "none" }}>
                   <div style={{ fontWeight: 900 }}>{STATUS_TITLES[st]}</div>
                   <div style={{ opacity: 0.8, fontSize: 12 }}>{items.length}</div>
                 </summary>
 
-                <div style={{ padding: "0 8px 8px", display: "flex", flexDirection: "column", gap: 6 }}>
+                <div
+                  onDragOver={onDragOverStatus}
+                  onDrop={(e) => onDropOnStatus(e, st)}
+                  style={{ padding: "0 8px 8px", display: "flex", flexDirection: "column", gap: 6 }}
+                >
                   {items.length === 0 ? (
                     <div style={{ opacity: 0.6, fontSize: 12, padding: "2px 4px" }}>No projects</div>
                   ) : (
