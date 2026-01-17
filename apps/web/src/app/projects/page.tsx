@@ -192,12 +192,6 @@ export default function ProjectsWorkspace() {
     if (!p) return;
     if (p.status === nextStatus) return;
 
-    const ok =
-      typeof window !== "undefined"
-        ? window.confirm(`Move "${p.name}" to "${STATUS_TITLES[nextStatus]}"?`)
-        : false;
-    if (!ok) return;
-
     try {
       await apiFetch<Project>(`/projects/${projectId}`, {
         method: "PATCH",
@@ -215,26 +209,130 @@ export default function ProjectsWorkspace() {
     }
   }
 
-  function onDragStartProject(e: React.DragEvent, projectId: string, fromStatus: Status) {
-    e.dataTransfer.setData("text/plain", projectId);
-    e.dataTransfer.setData("application/x-minifix-from-status", fromStatus);
-    e.dataTransfer.effectAllowed = "move";
+  // Desktop-safe pointer drag + modern confirm modal (no HTML5 drag/drop)
+  const [dragging, setDragging] = useState<null | {
+    projectId: string;
+    from: Status;
+    name: string;
+    x: number;
+    y: number;
+  }>(null);
+
+  const [hoverStatus, setHoverStatus] = useState<Status | null>(null);
+
+  const [confirmMove, setConfirmMove] = useState<null | {
+    projectId: string;
+    name: string;
+    from: Status;
+    to: Status;
+  }>(null);
+
+  const dragRef = React.useRef<{
+    pid: string;
+    from: Status;
+    name: string;
+    startX: number;
+    startY: number;
+    active: boolean;
+    pointerId: number;
+  } | null>(null);
+
+  const suppressClickRef = React.useRef(false);
+
+  function findDropStatusFromPoint(clientX: number, clientY: number): Status | null {
+    if (typeof document === "undefined") return null;
+    const el = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    let cur: HTMLElement | null = el;
+    while (cur) {
+      const v = cur.getAttribute?.("data-drop-status");
+      if (v) return v as Status;
+      cur = cur.parentElement;
+    }
+    return null;
   }
 
-  function onDragOverStatus(e: React.DragEvent) {
-    e.preventDefault(); // allow drop
-    e.dataTransfer.dropEffect = "move";
+  function startPointerDrag(e: React.PointerEvent, p: Project) {
+    if ((e as any).button != null && (e as any).button !== 0) return;
+
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+
+    dragRef.current = {
+      pid: p.id,
+      from: p.status,
+      name: p.name,
+      startX: e.clientX,
+      startY: e.clientY,
+      active: false,
+      pointerId: e.pointerId,
+    };
   }
 
-  function onDropOnStatus(e: React.DragEvent, toStatus: Status) {
-    e.preventDefault();
-    const projectId = e.dataTransfer.getData("text/plain");
-    const fromStatus = (e.dataTransfer.getData("application/x-minifix-from-status") || "") as Status;
+  function movePointerDrag(e: React.PointerEvent) {
+    if (!dragRef.current) return;
 
-    if (!projectId) return;
-    if (fromStatus && fromStatus === toStatus) return;
+    const dx = Math.abs(e.clientX - dragRef.current.startX);
+    const dy = Math.abs(e.clientY - dragRef.current.startY);
 
-    void moveProjectTo(projectId, toStatus); // will show confirmation popup
+    if (!dragRef.current.active) {
+      if (dx < 6 && dy < 6) return;
+      dragRef.current.active = true;
+      setDragging({
+        projectId: dragRef.current.pid,
+        from: dragRef.current.from,
+        name: dragRef.current.name,
+        x: e.clientX,
+        y: e.clientY,
+      });
+    } else {
+      setDragging((prev) =>
+        prev
+          ? { ...prev, x: e.clientX, y: e.clientY }
+          : {
+              projectId: dragRef.current!.pid,
+              from: dragRef.current!.from,
+              name: dragRef.current!.name,
+              x: e.clientX,
+              y: e.clientY,
+            }
+      );
+    }
+
+    const st = findDropStatusFromPoint(e.clientX, e.clientY);
+    setHoverStatus(st);
+  }
+
+  function endPointerDrag(e: React.PointerEvent) {
+    if (!dragRef.current) return;
+
+    const wasActive = dragRef.current.active;
+    const pid = dragRef.current.pid;
+    const from = dragRef.current.from;
+    const name = dragRef.current.name;
+
+    dragRef.current = null;
+    setDragging(null);
+
+    if (!wasActive) return;
+
+    suppressClickRef.current = true;
+    setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 0);
+
+    const to = findDropStatusFromPoint(e.clientX, e.clientY);
+    setHoverStatus(null);
+
+    if (!to) return;
+    if (to === from) return;
+
+    setConfirmMove({ projectId: pid, name, from, to });
+  }
+
+  async function confirmMoveYes() {
+    if (!confirmMove) return;
+    const { projectId, to } = confirmMove;
+    setConfirmMove(null);
+    await moveProjectTo(projectId, to);
   }
 
   const [files, setFiles] = useState<FileRow[]>([]);
@@ -736,7 +834,14 @@ This deletes the file and all its versions.`)
               <details
                 key={st}
                 open
-                style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17" }}
+                data-drop-status={st}
+                style={{
+                  border: "1px solid #30363d",
+                  borderRadius: 14,
+                  background: "#0b0f17",
+                  outline: hoverStatus === st ? "2px solid #3b82f6" : "none",
+                  outlineOffset: 2,
+                }}
               >
                 <summary style={{ cursor: "pointer", padding: "10px 10px", display: "flex", justifyContent: "space-between", userSelect: "none" }}>
                   <div style={{ fontWeight: 900 }}>{STATUS_TITLES[st]}</div>
@@ -744,9 +849,12 @@ This deletes the file and all its versions.`)
                 </summary>
 
                 <div
-                  onDragOver={onDragOverStatus}
-                  onDrop={(e) => onDropOnStatus(e, st)}
-                  style={{ padding: "0 8px 8px", display: "flex", flexDirection: "column", gap: 6 }}
+                  style={{
+                    padding: "0 8px 8px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                  }}
                 >
                   {items.length === 0 ? (
                     <div style={{ opacity: 0.6, fontSize: 12, padding: "2px 4px" }}>No projects</div>
@@ -756,9 +864,12 @@ This deletes the file and all its versions.`)
                       return (
                         <button
                           key={p.id}
-                          draggable
-                          onDragStart={(e) => onDragStartProject(e, p.id, p.status)}
+                          onPointerDown={(e) => startPointerDrag(e, p)}
+                          onPointerMove={movePointerDrag}
+                          onPointerUp={endPointerDrag}
+                          onPointerCancel={endPointerDrag}
                           onClick={() => {
+                            if (suppressClickRef.current) return;
                             setSelectedProjectId(p.id);
                             setSection("overview");
                           }}
@@ -771,6 +882,7 @@ This deletes the file and all its versions.`)
                             background: selected ? "#111827" : "#0f1623",
                             color: "#e6edf3",
                             cursor: "pointer",
+                            userSelect: "none",
                           }}
                         >
                           <div style={{ fontWeight: 900, lineHeight: 1.2, fontSize: 14 }}>{p.name}</div>
@@ -788,6 +900,86 @@ This deletes the file and all its versions.`)
           })}
         </div>
       </div>
+
+      {/* Drag ghost */}
+      {dragging ? (
+        <div
+          style={{
+            position: "fixed",
+            left: dragging.x + 12,
+            top: dragging.y + 12,
+            zIndex: 9999,
+            pointerEvents: "none",
+            width: 280,
+            borderRadius: 12,
+            border: "1px solid #30363d",
+            background: "#0f1623",
+            color: "#e6edf3",
+            padding: "10px 10px",
+            boxShadow: "0 12px 30px rgba(0,0,0,0.45)",
+          }}
+        >
+          <div style={{ fontWeight: 900, lineHeight: 1.2, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {dragging.name}
+          </div>
+          <div style={{ opacity: 0.75, fontSize: 12, marginTop: 4 }}>
+            Move to: {hoverStatus ? STATUS_TITLES[hoverStatus] : "—"}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Modern confirmation modal */}
+      {confirmMove ? (
+        <div
+          onMouseDown={() => setConfirmMove(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 10000,
+            background: "rgba(0,0,0,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              width: 420,
+              maxWidth: "100%",
+              borderRadius: 16,
+              border: "1px solid #30363d",
+              background: "#0b0f17",
+              color: "#e6edf3",
+              padding: 16,
+              boxShadow: "0 18px 50px rgba(0,0,0,0.55)",
+            }}
+          >
+            <div style={{ fontWeight: 950, fontSize: 16 }}>Move project?</div>
+            <div style={{ marginTop: 10, opacity: 0.85, lineHeight: 1.35 }}>
+              Move <span style={{ fontWeight: 900 }}>{confirmMove.name}</span> from{" "}
+              <span style={{ fontWeight: 900 }}>{STATUS_TITLES[confirmMove.from]}</span> to{" "}
+              <span style={{ fontWeight: 900 }}>{STATUS_TITLES[confirmMove.to]}</span>?
+            </div>
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
+              <button
+                onClick={() => setConfirmMove(null)}
+                style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3", cursor: "pointer", fontWeight: 800 }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmMoveYes}
+                style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #3b82f6", background: "#1d4ed8", color: "#ffffff", cursor: "pointer", fontWeight: 900 }}
+              >
+                Move
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* MIDDLE: sections inside project */}
       <div
