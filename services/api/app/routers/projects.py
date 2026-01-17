@@ -221,6 +221,7 @@ async def list_projects(status: str = "current", db: AsyncSession = Depends(get_
         name=p.name,
         status=p.status,
         priority=p.priority,
+        created_at=p.created_at,
         updated_at=p.updated_at,
 
         eta_date=p.eta_date,
@@ -245,6 +246,7 @@ async def list_projects_all(db: AsyncSession = Depends(get_db), user: User = Dep
         name=p.name,
         status=p.status,
         priority=p.priority,
+        created_at=p.created_at,
         updated_at=p.updated_at,
 
         eta_date=p.eta_date,
@@ -269,7 +271,7 @@ async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db),
         INSERT INTO projects (project_no, name, status, priority, created_by, created_at, updated_at)
         VALUES (:project_no, :name, :status, :priority, :created_by, now(), now())
         RETURNING
-          id, project_no, name, status, priority, updated_at,
+          id, project_no, name, status, priority, created_at, updated_at,
           payment_date, max_days_to_finish, eta_date,
           total_amount::float8 as total_amount, paid_amount::float8 as paid_amount,
           inventory_state, missing_items, inventory_notes
@@ -315,7 +317,7 @@ async def update_project(project_id: UUID, req: ProjectUpdate, db: AsyncSession 
     # load current row first so we can do "partial updates" safely
     cur_res = await db.execute(text("""
         SELECT
-          id, project_no, name, status, priority, updated_at,
+          id, project_no, name, status, priority, created_at, updated_at,
           payment_date, max_days_to_finish, eta_date,
           total_amount::float8 as total_amount, paid_amount::float8 as paid_amount,
           inventory_state, missing_items, inventory_notes
@@ -365,7 +367,7 @@ async def update_project(project_id: UUID, req: ProjectUpdate, db: AsyncSession 
           updated_at=now()
         WHERE id=:id
         RETURNING
-          id, project_no, name, status, priority, updated_at,
+          id, project_no, name, status, priority, created_at, updated_at,
           payment_date, max_days_to_finish, eta_date,
           total_amount::float8 as total_amount, paid_amount::float8 as paid_amount,
           inventory_state, missing_items, inventory_notes

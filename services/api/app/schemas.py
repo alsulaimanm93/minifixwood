@@ -53,6 +53,7 @@ class ProjectOut(BaseModel):
     name: str
     status: str
     priority: int
+    created_at: datetime
     updated_at: datetime
 
     # Payments / delivery
@@ -78,6 +79,175 @@ class ProjectOut(BaseModel):
     inventory_state: Dict[str, Any] = Field(default_factory=dict)
     missing_items: Optional[str] = None
     inventory_notes: Optional[str] = None
+# Inventory (high-end, lot-based)
+class SupplierCreate(BaseModel):
+    name: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    notes: Optional[str] = None
+
+class SupplierUpdate(BaseModel):
+    name: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    notes: Optional[str] = None
+
+class SupplierOut(BaseModel):
+    id: UUID
+    name: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+class ItemCreate(BaseModel):
+    sku: str
+    name: str
+    category: Optional[str] = None
+    type: str  # sheet | fitting | appliance | consumable
+    uom: str = "pcs"
+    default_supplier_id: Optional[UUID] = None
+    min_stock: Optional[float] = None
+
+class ItemUpdate(BaseModel):
+    sku: str
+    name: str
+    category: Optional[str] = None
+    type: str
+    uom: str = "pcs"
+    default_supplier_id: Optional[UUID] = None
+    min_stock: Optional[float] = None
+    is_active: bool = True
+
+class ItemOut(BaseModel):
+    id: UUID
+    sku: str
+    name: str
+    category: Optional[str] = None
+    type: str
+    uom: str
+    default_supplier_id: Optional[UUID] = None
+    min_stock: Optional[float] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+class StockLotReceive(BaseModel):
+    item_id: UUID
+    qty: float
+    location: Optional[str] = None
+    unit_cost: Optional[float] = None
+    ref: Optional[str] = None
+
+class StockLotOut(BaseModel):
+    id: UUID
+    item_id: UUID
+    location: Optional[str] = None
+    qty_on_hand: float
+    qty_reserved: float
+    unit_cost: Optional[float] = None
+    source: str
+    ref: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    
+class StockLotView(BaseModel):
+    id: UUID
+    item_id: UUID
+    sku: str
+    name: str
+    type: str
+    uom: str
+    location: Optional[str] = None
+    qty_on_hand: float
+    qty_reserved: float
+    unit_cost: Optional[float] = None
+    source: str
+    ref: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+class SheetLotCreate(BaseModel):
+    material_item_id: UUID
+    thickness_mm: Optional[int] = None
+    w_mm: int
+    h_mm: int
+    qty: int = 1
+    usable: bool = True
+    location: Optional[str] = None
+    tag_code: Optional[str] = None
+    project_origin_id: Optional[UUID] = None
+    source: str = "purchase"  # purchase | remnant | adjustment
+    unit_cost: Optional[float] = None
+
+class SheetLotOut(BaseModel):
+    id: UUID
+    material_item_id: UUID
+    thickness_mm: Optional[int] = None
+    w_mm: int
+    h_mm: int
+    qty: int
+    usable: bool
+    location: Optional[str] = None
+    tag_code: Optional[str] = None
+    project_origin_id: Optional[UUID] = None
+    reserved_for_project_id: Optional[UUID] = None
+    source: str
+    unit_cost: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime
+class SheetLotView(BaseModel):
+    id: UUID
+    material_item_id: UUID
+    material_sku: str
+    material_name: str
+    thickness_mm: Optional[int] = None
+    w_mm: int
+    h_mm: int
+    qty: int
+    usable: bool
+    location: Optional[str] = None
+    tag_code: Optional[str] = None
+    project_origin_id: Optional[UUID] = None
+    reserved_for_project_id: Optional[UUID] = None
+    source: str
+    unit_cost: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime
+
+class SheetReserveReq(BaseModel):
+    project_id: UUID
+
+class ProjectRequirementUpsert(BaseModel):
+    item_id: UUID
+    qty_required: float
+    notes: Optional[str] = None
+    source: str = "manual"
+
+class ProjectRequirementOut(BaseModel):
+    id: UUID
+    project_id: UUID
+    item_id: UUID
+    qty_required: float
+    notes: Optional[str] = None
+    source: str
+    updated_at: datetime
+
+class ProjectAvailabilityRow(BaseModel):
+    item_id: UUID
+    sku: str
+    name: str
+    type: str
+    uom: str
+    qty_required: float
+    qty_on_hand: float
+    qty_reserved_total: float
+    qty_available_net: float
+    qty_to_buy: float
 
 # Files
 class FileCreate(BaseModel):
