@@ -9,11 +9,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <div style={{ width: "100%", maxWidth: 1800, margin: "0 auto", padding: 12 }}>
           <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <div style={{ fontWeight: 800 }}>Workshop</div>
-            <nav style={{ display: "flex", gap: 12 }}>
-              <a href="/projects" style={{ color: "#e6edf3" }}>Projects</a>
-              <a href="/projects/new" style={{ color: "#e6edf3", fontWeight: 800 }}>+ New Project</a>
-              <a href="/login" style={{ color: "#e6edf3" }}>Login</a>
-            </nav>
+            {/* top nav removed (unused) */}
           </header>
           <main style={{ marginTop: 16 }}>{children}</main>
         </div>

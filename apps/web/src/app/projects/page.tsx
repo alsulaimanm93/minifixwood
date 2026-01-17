@@ -215,6 +215,28 @@ export default function ProjectsWorkspace() {
     }
   }
 
+  function onDragStartProject(e: React.DragEvent, projectId: string, fromStatus: Status) {
+    e.dataTransfer.setData("text/plain", projectId);
+    e.dataTransfer.setData("application/x-minifix-from-status", fromStatus);
+    e.dataTransfer.effectAllowed = "move";
+  }
+
+  function onDragOverStatus(e: React.DragEvent) {
+    e.preventDefault(); // allow drop
+    e.dataTransfer.dropEffect = "move";
+  }
+
+  function onDropOnStatus(e: React.DragEvent, toStatus: Status) {
+    e.preventDefault();
+    const projectId = e.dataTransfer.getData("text/plain");
+    const fromStatus = (e.dataTransfer.getData("application/x-minifix-from-status") || "") as Status;
+
+    if (!projectId) return;
+    if (fromStatus && fromStatus === toStatus) return;
+
+    void moveProjectTo(projectId, toStatus); // will show confirmation popup
+  }
+
   const [files, setFiles] = useState<FileRow[]>([]);
   const [filesErr, setFilesErr] = useState<string | null>(null);
 
@@ -658,7 +680,8 @@ This deletes the file and all its versions.`)
           background: "#0f1623",
           padding: 12,
           maxHeight: "calc(100vh - 24px)",
-          overflow: "auto",
+          overflowY: "auto",
+          overflowX: "hidden",
         }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
@@ -691,7 +714,7 @@ This deletes the file and all its versions.`)
         <input
           value={projQ}
           onChange={(e) => setProjQ(e.target.value)}
-          placeholder="Search projectsâ€¦"
+          placeholder="Search projects..."
           style={{
             width: "100%",
             marginTop: 10,
@@ -713,13 +736,10 @@ This deletes the file and all its versions.`)
               <details
                 key={st}
                 open
-                onDragOver={(e) => { e.preventDefault(); }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const pid = e.dataTransfer.getData("text/project_id");
-                  if (pid) moveProjectTo(pid, st);
-                }}
+                onDragOver={onDragOverStatus}
+                onDrop={(e) => onDropOnStatus(e, st)}
                 style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17" }}
+
               >
                 <summary style={{ cursor: "pointer", padding: "10px 10px", display: "flex", justifyContent: "space-between", userSelect: "none" }}>
                   <div style={{ fontWeight: 900 }}>{STATUS_TITLES[st]}</div>
@@ -736,10 +756,7 @@ This deletes the file and all its versions.`)
                         <button
                           key={p.id}
                           draggable
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData("text/project_id", p.id);
-                            e.dataTransfer.effectAllowed = "move";
-                          }}
+                          onDragStart={(e) => onDragStartProject(e, p.id, p.status)}
                           onClick={() => {
                             setSelectedProjectId(p.id);
                             setSection("overview");
@@ -815,7 +832,7 @@ This deletes the file and all its versions.`)
                     }}
                   >
                     <div style={{ fontWeight: 900 }}>{SECTION_TITLES[k]}</div>
-                    <div style={{ opacity: 0.6, fontSize: 12 }}>â€º</div>
+                    <div style={{ opacity: 0.6, fontSize: 12 }}>{">"}</div>
                   </button>
                 );
               })}
@@ -834,16 +851,11 @@ This deletes the file and all its versions.`)
               <div>
                 <div style={{ fontWeight: 950, fontSize: 18 }}>Workspace</div>
                 <div style={{ opacity: 0.7, fontSize: 13 }}>
-                  {selectedProject.name} â€¢ {SECTION_TITLES[section]}
+                  {selectedProject.name} - {SECTION_TITLES[section]}
                 </div>
               </div>
 
-              <a
-                href={`/project/${selectedProject.id}`}
-                style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", textDecoration: "none", fontWeight: 900 }}
-              >
-                Open project
-              </a>
+              {/* Open project button removed (unused) */}
             </div>
             {/* Version history moved into Preview (collapsible) */}
 
@@ -953,10 +965,10 @@ This deletes the file and all its versions.`)
                         <div style={{ minWidth: 0 }}>
                             <div style={{ fontWeight: 900, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.name}</div>
                             <div style={{ opacity: 0.75, fontSize: 12 }}>
-                            {f.kind} â€¢ {fmtSize(f.size_bytes)}
+                            {f.kind} - {fmtSize(f.size_bytes)}
                             </div>
                         </div>
-                        <div style={{ opacity: 0.7, fontSize: 12, whiteSpace: "nowrap" }}>{busyFileId === f.id ? "â€¦" : ""}</div>
+                        <div style={{ opacity: 0.7, fontSize: 12, whiteSpace: "nowrap" }}>{busyFileId === f.id ? "..." : ""}</div>
                         </button>
                     );
                     })
@@ -1114,7 +1126,7 @@ This deletes the file and all its versions.`)
                             <div style={{ padding: 14, borderRadius: 14, border: "1px solid #30363d", background: "#0f1623" }}>
                             <div style={{ fontWeight: 900 }}>No inline preview</div>
                             <div style={{ opacity: 0.75, marginTop: 6, fontSize: 12 }}>
-                                Browser canâ€™t render {isXlsx ? "XLS/XLSX" : "DOC/DOCX"} directly. Use Open (main) or Download.
+                                Browser can't render {isXlsx ? "XLS/XLSX" : "DOC/DOCX"} directly. Use Open (main) or Download.
                             </div>
                             </div>
                         );
