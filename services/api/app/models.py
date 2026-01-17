@@ -1,6 +1,6 @@
 import uuid
-from datetime import datetime
-from sqlalchemy import String, Boolean, DateTime, ForeignKey, Integer, BigInteger, Numeric, Text
+from datetime import datetime, date
+from sqlalchemy import String, Boolean, DateTime, Date, ForeignKey, Integer, BigInteger, Numeric, Text
 from sqlalchemy.dialects.postgresql import UUID, JSONB, INET
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
@@ -23,10 +23,18 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    from datetime import date
-    eta_date: Mapped[date | None] = mapped_column(nullable=True)
+
+    # Payments / delivery tracking
+    eta_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     total_amount: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     paid_amount: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    payment_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    max_days_to_finish: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Inventory tracking (lightweight for now)
+    inventory_state = mapped_column(JSONB, nullable=False, default=dict)
+    missing_items: Mapped[str | None] = mapped_column(Text, nullable=True)
+    inventory_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

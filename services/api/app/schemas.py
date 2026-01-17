@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Any, Dict, List
 from uuid import UUID
-from datetime import date, datetime
+from datetime import datetime, date
 
 # Auth
 class LoginRequest(BaseModel):
@@ -54,6 +54,18 @@ class ProjectOut(BaseModel):
     status: str
     priority: int
     updated_at: datetime
+
+    # Payments / delivery
+    eta_date: Optional[date] = None
+    total_amount: Optional[float] = None
+    paid_amount: Optional[float] = None
+    payment_date: Optional[date] = None
+    max_days_to_finish: Optional[int] = None
+
+    # Inventory
+    inventory_state: Dict[str, Any] = Field(default_factory=dict)
+    missing_items: Optional[str] = None
+    inventory_notes: Optional[str] = None
 
     # Payments / delivery
     eta_date: Optional[date] = None

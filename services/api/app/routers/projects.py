@@ -15,6 +15,7 @@ from ..core.config import settings
 from ..db import get_db
 from ..models import Project, User
 from datetime import date, timedelta
+import json
 
 from ..schemas import ProjectCreate, ProjectUpdate, ProjectOut
 from ..deps import get_current_user
@@ -215,7 +216,22 @@ async def list_projects(status: str = "current", db: AsyncSession = Depends(get_
     q = await db.execute(select(Project).where(Project.status == status).order_by(Project.updated_at.desc()))
     rows = q.scalars().all()
     return [ProjectOut(
-        id=p.id, project_no=p.project_no, name=p.name, status=p.status, priority=p.priority, updated_at=p.updated_at
+        id=p.id,
+        project_no=p.project_no,
+        name=p.name,
+        status=p.status,
+        priority=p.priority,
+        updated_at=p.updated_at,
+
+        eta_date=p.eta_date,
+        total_amount=(float(p.total_amount) if p.total_amount is not None else None),
+        paid_amount=(float(p.paid_amount) if p.paid_amount is not None else None),
+        payment_date=p.payment_date,
+        max_days_to_finish=p.max_days_to_finish,
+
+        inventory_state=(p.inventory_state or {}),
+        missing_items=p.missing_items,
+        inventory_notes=p.inventory_notes,
     ) for p in rows]
 
 
@@ -224,7 +240,22 @@ async def list_projects_all(db: AsyncSession = Depends(get_db), user: User = Dep
     q = await db.execute(select(Project).order_by(Project.updated_at.desc()))
     rows = q.scalars().all()
     return [ProjectOut(
-        id=p.id, project_no=p.project_no, name=p.name, status=p.status, priority=p.priority, updated_at=p.updated_at
+        id=p.id,
+        project_no=p.project_no,
+        name=p.name,
+        status=p.status,
+        priority=p.priority,
+        updated_at=p.updated_at,
+
+        eta_date=p.eta_date,
+        total_amount=(float(p.total_amount) if p.total_amount is not None else None),
+        paid_amount=(float(p.paid_amount) if p.paid_amount is not None else None),
+        payment_date=p.payment_date,
+        max_days_to_finish=p.max_days_to_finish,
+
+        inventory_state=(p.inventory_state or {}),
+        missing_items=p.missing_items,
+        inventory_notes=p.inventory_notes,
     ) for p in rows]
 
 
@@ -240,7 +271,7 @@ async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db),
         RETURNING
           id, project_no, name, status, priority, updated_at,
           payment_date, max_days_to_finish, eta_date,
-          total_amount, paid_amount,
+          total_amount::float8 as total_amount, paid_amount::float8 as paid_amount,
           inventory_state, missing_items, inventory_notes
     """), {
         "project_no": req.project_no,
@@ -286,7 +317,7 @@ async def update_project(project_id: UUID, req: ProjectUpdate, db: AsyncSession 
         SELECT
           id, project_no, name, status, priority, updated_at,
           payment_date, max_days_to_finish, eta_date,
-          total_amount, paid_amount,
+          total_amount::float8 as total_amount, paid_amount::float8 as paid_amount,
           inventory_state, missing_items, inventory_notes
         FROM projects
         WHERE id=:id
@@ -327,7 +358,7 @@ async def update_project(project_id: UUID, req: ProjectUpdate, db: AsyncSession 
           total_amount=:total_amount,
           paid_amount=:paid_amount,
 
-          inventory_state=:inventory_state,
+          inventory_state=(:inventory_state)::jsonb,
           missing_items=:missing_items,
           inventory_notes=:inventory_notes,
 
@@ -336,7 +367,7 @@ async def update_project(project_id: UUID, req: ProjectUpdate, db: AsyncSession 
         RETURNING
           id, project_no, name, status, priority, updated_at,
           payment_date, max_days_to_finish, eta_date,
-          total_amount, paid_amount,
+          total_amount::float8 as total_amount, paid_amount::float8 as paid_amount,
           inventory_state, missing_items, inventory_notes
     """), {
         "id": str(project_id),
@@ -353,7 +384,7 @@ async def update_project(project_id: UUID, req: ProjectUpdate, db: AsyncSession 
         "total_amount": next_total,
         "paid_amount": next_paid,
 
-        "inventory_state": next_inventory_state,
+        "inventory_state": json.dumps(next_inventory_state or {}),
         "missing_items": next_missing_items,
         "inventory_notes": next_inventory_notes,
     })

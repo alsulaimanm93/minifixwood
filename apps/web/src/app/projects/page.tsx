@@ -1474,132 +1474,167 @@ This deletes the file and all its versions.`)
             )}
 
             {section === "overview" && selectedProject ? (
-              <div style={{ marginTop: 14, border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  <div style={{ fontWeight: 950, fontSize: 15 }}>Project Setup</div>
-                  <button
-                    onClick={() => saveProjectSetup()}
-                    disabled={setupBusy}
-                    style={{
-                      padding: "8px 12px",
-                      borderRadius: 12,
-                      border: "1px solid #30363d",
-                      background: setupBusy ? "#111827" : "#1f6feb",
-                      color: "#e6edf3",
-                      fontWeight: 900,
-                      cursor: setupBusy ? "not-allowed" : "pointer",
-                      opacity: setupBusy ? 0.7 : 1,
-                    }}
-                  >
-                    {setupBusy ? "Saving..." : "Save"}
-                  </button>
-                </div>
+              <details style={{ marginTop: 14, border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17" }}>
+                <summary
+                  style={{
+                    padding: 12,
+                    cursor: "pointer",
+                    userSelect: "none",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 12,
+                  }}
+                >
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+                    <div style={{ fontWeight: 950, fontSize: 15 }}>Project Setup</div>
 
-                {setupMsg ? (
-                  <div style={{ marginTop: 10, opacity: setupMsg === "Saved." ? 0.75 : 1, color: setupMsg === "Saved." ? "#7ee787" : "#ff7b72" }}>
-                    {setupMsg}
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", opacity: 0.72, fontSize: 12 }}>
+                      <div style={{ whiteSpace: "nowrap" }}>
+                        Paid {fmtMoney(selectedProject.paid_amount)}/{fmtMoney(selectedProject.total_amount)}
+                      </div>
+                      <div style={{ opacity: 0.6 }}>•</div>
+                      <div style={{ whiteSpace: "nowrap" }}>
+                        Balance {fmtMoney(calcBalance(selectedProject.total_amount, selectedProject.paid_amount))}
+                      </div>
+                      <div style={{ opacity: 0.6 }}>•</div>
+                      <div style={{ whiteSpace: "nowrap" }}>
+                        ETA {fmtDateShort(selectedProject.eta_date)}
+                      </div>
+                    </div>
                   </div>
-                ) : null}
 
-                <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-                  {/* Payments */}
-                  <div style={{ border: "1px solid #30363d", borderRadius: 12, background: "#0f1623", padding: 12 }}>
-                    <div style={{ fontWeight: 900, marginBottom: 10 }}>Payments</div>
+                  <div style={{ opacity: 0.7, fontSize: 14 }}>▾</div>
+                </summary>
 
-                    <div style={{ display: "grid", gap: 8 }}>
-                      <label style={{ fontSize: 12, opacity: 0.75 }}>Total (QAR)</label>
-                      <input
-                        value={setupTotal}
-                        onChange={(e) => setSetupTotal(e.target.value)}
-                        placeholder="e.g. 5700"
-                        style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
-                      />
+                <div style={{ padding: 12, paddingTop: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ opacity: 0.7, fontSize: 12 }}>Edit payments, delivery & inventory then Save.</div>
 
-                      <label style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Paid (QAR)</label>
-                      <input
-                        value={setupPaid}
-                        onChange={(e) => setSetupPaid(e.target.value)}
-                        placeholder="e.g. 2850"
-                        style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
-                      />
+                    <button
+                      onClick={() => saveProjectSetup()}
+                      disabled={setupBusy}
+                      style={{
+                        padding: "8px 12px",
+                        borderRadius: 12,
+                        border: "1px solid #30363d",
+                        background: setupBusy ? "#111827" : "#1f6feb",
+                        color: "#e6edf3",
+                        fontWeight: 900,
+                        cursor: setupBusy ? "not-allowed" : "pointer",
+                        opacity: setupBusy ? 0.7 : 1,
+                      }}
+                    >
+                      {setupBusy ? "Saving..." : "Save"}
+                    </button>
+                  </div>
 
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8, fontSize: 12, opacity: 0.85 }}>
-                        <div>Balance</div>
-                        <div style={{ fontWeight: 900 }}>
-                          {fmtMoney(calcBalance(setupTotal === "" ? null : Number(setupTotal), setupPaid === "" ? null : Number(setupPaid)))}
+                  {setupMsg ? (
+                    <div style={{ marginTop: 10, opacity: setupMsg === "Saved." ? 0.75 : 1, color: setupMsg === "Saved." ? "#7ee787" : "#ff7b72" }}>
+                      {setupMsg}
+                    </div>
+                  ) : null}
+
+                  <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                    {/* Payments */}
+                    <div style={{ border: "1px solid #30363d", borderRadius: 12, background: "#0f1623", padding: 12 }}>
+                      <div style={{ fontWeight: 900, marginBottom: 10 }}>Payments</div>
+
+                      <div style={{ display: "grid", gap: 8 }}>
+                        <label style={{ fontSize: 12, opacity: 0.75 }}>Total (QAR)</label>
+                        <input
+                          value={setupTotal}
+                          onChange={(e) => setSetupTotal(e.target.value)}
+                          placeholder="e.g. 5700"
+                          style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
+                        />
+
+                        <label style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Paid (QAR)</label>
+                        <input
+                          value={setupPaid}
+                          onChange={(e) => setSetupPaid(e.target.value)}
+                          placeholder="e.g. 2850"
+                          style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
+                        />
+
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8, fontSize: 12, opacity: 0.85 }}>
+                          <div>Balance</div>
+                          <div style={{ fontWeight: 900 }}>
+                            {fmtMoney(calcBalance(setupTotal === "" ? null : Number(setupTotal), setupPaid === "" ? null : Number(setupPaid)))}
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Delivery */}
-                  <div style={{ border: "1px solid #30363d", borderRadius: 12, background: "#0f1623", padding: 12 }}>
-                    <div style={{ fontWeight: 900, marginBottom: 10 }}>Delivery</div>
+                    {/* Delivery */}
+                    <div style={{ border: "1px solid #30363d", borderRadius: 12, background: "#0f1623", padding: 12 }}>
+                      <div style={{ fontWeight: 900, marginBottom: 10 }}>Delivery</div>
 
-                    <div style={{ display: "grid", gap: 8 }}>
-                      <label style={{ fontSize: 12, opacity: 0.75 }}>Payment date</label>
-                      <input
-                        type="date"
-                        value={setupPaymentDate}
-                        onChange={(e) => setSetupPaymentDate(e.target.value)}
-                        style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
-                      />
+                      <div style={{ display: "grid", gap: 8 }}>
+                        <label style={{ fontSize: 12, opacity: 0.75 }}>Payment date</label>
+                        <input
+                          type="date"
+                          value={setupPaymentDate}
+                          onChange={(e) => setSetupPaymentDate(e.target.value)}
+                          style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
+                        />
 
-                      <label style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Max days to deliver</label>
-                      <input
-                        value={setupMaxDays}
-                        onChange={(e) => setSetupMaxDays(e.target.value)}
-                        placeholder="e.g. 16"
-                        style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
-                      />
+                        <label style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Max days to deliver</label>
+                        <input
+                          value={setupMaxDays}
+                          onChange={(e) => setSetupMaxDays(e.target.value)}
+                          placeholder="e.g. 16"
+                          style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
+                        />
 
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8, fontSize: 12, opacity: 0.85 }}>
-                        <div>ETA (skip Fridays)</div>
-                        <div style={{ fontWeight: 900 }}>{fmtDateShort(selectedProject.eta_date)}</div>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8, fontSize: 12, opacity: 0.85 }}>
+                          <div>ETA (skip Fridays)</div>
+                          <div style={{ fontWeight: 900 }}>{fmtDateShort(selectedProject.eta_date)}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Inventory */}
+                    <div style={{ border: "1px solid #30363d", borderRadius: 12, background: "#0f1623", padding: 12 }}>
+                      <div style={{ fontWeight: 900, marginBottom: 10 }}>Inventory</div>
+
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {[
+                          ["bom_prepared", "BOM prepared"],
+                          ["wood_received", "Wood received"],
+                          ["hardware_received", "Hardware received"],
+                          ["ready_for_cutting", "Ready for cutting"],
+                        ].map(([k, label]) => (
+                          <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, opacity: 0.9 }}>
+                            <input
+                              type="checkbox"
+                              checked={!!setupInv?.[k]}
+                              onChange={(e) => setSetupInv((p) => ({ ...(p || {}), [k]: e.target.checked }))}
+                            />
+                            {label}
+                          </label>
+                        ))}
+
+                        <label style={{ fontSize: 12, opacity: 0.75, marginTop: 8 }}>Missing items (one per line)</label>
+                        <textarea
+                          value={setupMissing}
+                          onChange={(e) => setSetupMissing(e.target.value)}
+                          rows={3}
+                          style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", resize: "vertical" }}
+                        />
+
+                        <label style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Notes</label>
+                        <textarea
+                          value={setupNotes}
+                          onChange={(e) => setSetupNotes(e.target.value)}
+                          rows={2}
+                          style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", resize: "vertical" }}
+                        />
                       </div>
                     </div>
                   </div>
-
-                  {/* Inventory */}
-                  <div style={{ border: "1px solid #30363d", borderRadius: 12, background: "#0f1623", padding: 12 }}>
-                    <div style={{ fontWeight: 900, marginBottom: 10 }}>Inventory</div>
-
-                    <div style={{ display: "grid", gap: 8 }}>
-                      {[
-                        ["bom_prepared", "BOM prepared"],
-                        ["wood_received", "Wood received"],
-                        ["hardware_received", "Hardware received"],
-                        ["ready_for_cutting", "Ready for cutting"],
-                      ].map(([k, label]) => (
-                        <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, opacity: 0.9 }}>
-                          <input
-                            type="checkbox"
-                            checked={!!setupInv?.[k]}
-                            onChange={(e) => setSetupInv((p) => ({ ...(p || {}), [k]: e.target.checked }))}
-                          />
-                          {label}
-                        </label>
-                      ))}
-
-                      <label style={{ fontSize: 12, opacity: 0.75, marginTop: 8 }}>Missing items (one per line)</label>
-                      <textarea
-                        value={setupMissing}
-                        onChange={(e) => setSetupMissing(e.target.value)}
-                        rows={3}
-                        style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", resize: "vertical" }}
-                      />
-
-                      <label style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Notes</label>
-                      <textarea
-                        value={setupNotes}
-                        onChange={(e) => setSetupNotes(e.target.value)}
-                        rows={2}
-                        style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", resize: "vertical" }}
-                      />
-                    </div>
-                  </div>
                 </div>
-              </div>
+              </details>
             ) : null}
 
             <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "0.9fr 1.1fr", gap: 14, alignItems: "start" }}>
