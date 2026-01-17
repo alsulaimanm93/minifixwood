@@ -24,6 +24,8 @@ class ProjectCreate(BaseModel):
     status: str = "current"
     priority: int = 0
     project_no: Optional[int] = None
+    seed_templates: bool = True
+
 
 class ProjectOut(BaseModel):
     id: UUID

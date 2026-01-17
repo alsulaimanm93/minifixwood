@@ -164,6 +164,11 @@ export default function ProjectsWorkspace() {
 
   const [fileOpBusy, setFileOpBusy] = useState<"rename" | "delete" | null>(null);
 
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameExt, setRenameExt] = useState("");
+  const [renameUiErr, setRenameUiErr] = useState<string | null>(null);
+
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
 
@@ -456,15 +461,60 @@ async function viewLatest() {
   await openPreview(selectedFile);
 }
 
-async function renameSelectedFile() {
+function openRenameModal() {
+  if (!selectedFile) return;
+
+  const nm = selectedFile.name || "";
+  const dot = nm.lastIndexOf(".");
+  const base = dot > 0 ? nm.slice(0, dot) : nm;
+  const ext = dot > 0 ? nm.slice(dot) : ""; // includes "."
+
+  setRenameDraft(base);
+  setRenameExt(ext);
+  setRenameUiErr(null);
+  setRenameOpen(true);
+}
+
+async function commitRename() {
   if (!selectedFile) return;
 
   const current = selectedFile.name || "";
-  const nextRaw = (typeof window !== "undefined" ? window.prompt("Rename file", current) : null) ?? "";
-  const next = nextRaw.trim();
-  if (!next || next === current) return;
+  let base = (renameDraft || "").trim();
+
+  if (!base) {
+    setRenameUiErr("Name can’t be empty.");
+    return;
+  }
+
+  const ext = renameExt || "";
+  const extNoDot = ext.startsWith(".") ? ext.slice(1).toLowerCase() : "";
+  const commonExts = ["pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "gif", "webp", "dxf", "nc", "tap", "gcode", "txt", "zip", "rar", "7z"];
+
+  // If user typed a full name with extension, strip it only when it actually looks like an extension.
+  if (extNoDot) {
+    const m = base.match(/^(.*)\.([A-Za-z0-9]{1,8})$/);
+    if (m) {
+      const typedExt = (m[2] || "").toLowerCase();
+      if (typedExt === extNoDot || commonExts.includes(typedExt)) {
+        base = m[1];
+      }
+    }
+
+    base = base.replace(/[.\s]+$/g, "").trim();
+    if (!base) {
+      setRenameUiErr("Name can’t be empty.");
+      return;
+    }
+  }
+
+  const next = ext ? `${base}${ext}` : base;
+  if (!next || next === current) {
+    setRenameOpen(false);
+    return;
+  }
 
   setPreviewErr(null);
+  setRenameUiErr(null);
   setFileOpBusy("rename");
   try {
     const updated = await apiFetch<FileRow>(`/files/${selectedFile.id}`, {
@@ -474,11 +524,17 @@ async function renameSelectedFile() {
 
     // update local list without a full reload
     setFiles((prev) => prev.map((x) => (x.id === updated.id ? { ...x, name: updated.name } : x)));
+
+    setRenameOpen(false);
   } catch (e: any) {
-    setPreviewErr(e?.message || String(e));
+    setRenameUiErr(e?.message || String(e));
   } finally {
     setFileOpBusy(null);
   }
+}
+
+async function renameSelectedFile() {
+  openRenameModal();
 }
 
 async function deleteSelectedFile() {
@@ -516,6 +572,7 @@ This deletes the file and all its versions.`)
   }, [visibleFiles, selectedFileId]);
 
   return (
+    <>
     <div
       style={{
         display: "grid",
@@ -1046,6 +1103,136 @@ This deletes the file and all its versions.`)
         )}
       </div>
     </div>
+
+
+      {renameOpen && selectedFile && (
+        <div
+          onClick={() => {
+            if (!fileOpBusy) {
+              setRenameOpen(false);
+              setRenameUiErr(null);
+            }
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.65)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 9999,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(560px, 100%)",
+              border: "1px solid #30363d",
+              borderRadius: 16,
+              background: "#0b0f17",
+              padding: 14,
+            }}
+          >
+            <div style={{ fontWeight: 950, fontSize: 16 }}>Rename file</div>
+            <div style={{ opacity: 0.75, fontSize: 12, marginTop: 4 }}>
+              Extension is fixed: <span style={{ fontWeight: 900 }}>{renameExt || "(none)"}</span>
+            </div>
+            <div style={{ opacity: 0.65, fontSize: 12, marginTop: 6, wordBreak: "break-word" }}>
+              Current: <span style={{ fontWeight: 900 }}>{selectedFile.name}</span>
+            </div>
+
+            <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                autoFocus
+                value={renameDraft}
+                onChange={(e) => setRenameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    if (!fileOpBusy) {
+                      setRenameOpen(false);
+                      setRenameUiErr(null);
+                    }
+                  }
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (!fileOpBusy) commitRename();
+                  }
+                }}
+                placeholder="File name"
+                style={{
+                  flex: 1,
+                  padding: 10,
+                  borderRadius: 12,
+                  border: "1px solid #30363d",
+                  background: "#0f1623",
+                  color: "#e6edf3",
+                  fontSize: 14,
+                }}
+              />
+              {renameExt ? (
+                <div
+                  style={{
+                    padding: "10px 10px",
+                    borderRadius: 12,
+                    border: "1px solid #30363d",
+                    background: "#0f1623",
+                    color: "#e6edf3",
+                    fontWeight: 900,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {renameExt}
+                </div>
+              ) : null}
+            </div>
+
+            {renameUiErr ? <div style={{ color: "#ff7b72", marginTop: 10 }}>{renameUiErr}</div> : null}
+
+            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button
+                onClick={() => {
+                  if (!fileOpBusy) {
+                    setRenameOpen(false);
+                    setRenameUiErr(null);
+                  }
+                }}
+                disabled={fileOpBusy !== null}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 12,
+                  border: "1px solid #30363d",
+                  background: "#0f1623",
+                  color: "#e6edf3",
+                  fontWeight: 900,
+                  opacity: fileOpBusy ? 0.6 : 1,
+                  cursor: fileOpBusy ? "not-allowed" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => commitRename()}
+                disabled={fileOpBusy !== null}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 12,
+                  border: "1px solid #30363d",
+                  background: "#1f6feb",
+                  color: "white",
+                  fontWeight: 900,
+                  opacity: fileOpBusy ? 0.6 : 1,
+                  cursor: fileOpBusy ? "not-allowed" : "pointer",
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

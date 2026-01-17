@@ -25,6 +25,8 @@ export default function NewProjectPage() {
   const [projectNo, setProjectNo] = useState("");
   const [status, setStatus] = useState<Status>("under_preparation");
   const [priority, setPriority] = useState("0");
+  const [seedTemplates, setSeedTemplates] = useState(true);
+
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -59,6 +61,8 @@ export default function NewProjectPage() {
           name: trimmed,
           status,
           priority: pr,
+          seed_templates: seedTemplates,
+
         }),
       });
 
@@ -117,6 +121,19 @@ export default function NewProjectPage() {
             style={{ padding: 10, borderRadius: 8, border: "1px solid #2f3338", background: "#0b0f14", color: "#e6edf3" }}
           />
         </label>
+        <label style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 12px", borderRadius: 10, border: "1px solid #2f3338", background: "#0b0f14" }}>
+          <input
+            type="checkbox"
+            checked={seedTemplates}
+            onChange={(e) => setSeedTemplates(e.target.checked)}
+            style={{ width: 16, height: 16 }}
+          />
+          <div style={{ display: "grid", gap: 2 }}>
+            <div style={{ fontWeight: 800 }}>Start with company template files</div>
+            <div style={{ fontSize: 12, opacity: 0.75 }}>Adds your standard files to Invoices & Contracts, Technical, CNC, etc.</div>
+          </div>
+        </label>
+
 
         {err ? <div style={{ color: "#ff7b72" }}>{err}</div> : null}
 

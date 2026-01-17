@@ -92,9 +92,39 @@ async def rename_file(file_id: UUID, req: FileRenameRequest, db: AsyncSession = 
     if not cur:
         raise HTTPException(404, "File not found")
 
+    # keep original extension (renaming should not change file type)
+    old_name = (cur.get("name") or "").strip()
+    old_ext = ""
+    if "." in old_name:
+        i = old_name.rfind(".")
+        if 0 < i < len(old_name) - 1:
+            old_ext = old_name[i:]  # includes dot
+
     new_name = safe_name(req.name or "")
     if not new_name:
         raise HTTPException(422, "Invalid name")
+
+    if old_ext:
+        # If user supplied an extension, ignore it (and keep the original).
+        base = new_name
+        low = base.lower()
+        old_low = old_ext.lower()
+        common_exts = {
+            "pdf","doc","docx","xls","xlsx","csv","png","jpg","jpeg","gif","webp","dxf","nc","tap","gcode","txt","zip","rar","7z"
+        }
+
+        if low.endswith(old_low):
+            base = base[:-len(old_ext)]
+        else:
+            m = re.match(r"^(.*)\.([A-Za-z0-9]{1,8})$", base)
+            if m and (m.group(2) or "").lower() in common_exts:
+                base = m.group(1)
+
+        base = base.rstrip(" .").strip()
+        new_name = f"{base}{old_ext}" if base else ""
+
+        if not new_name:
+            raise HTTPException(422, "Invalid name")
 
     result = await db.execute(text("""
         UPDATE files
