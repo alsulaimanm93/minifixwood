@@ -41,6 +41,9 @@ class FileCreate(BaseModel):
     mime: Optional[str] = None
     size_bytes: int = 0
 
+class FileRenameRequest(BaseModel):
+    name: str
+
 class FileOut(BaseModel):
     id: UUID
     project_id: Optional[UUID]

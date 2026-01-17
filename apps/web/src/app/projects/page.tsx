@@ -162,6 +162,8 @@ export default function ProjectsWorkspace() {
   const [viewVersionId, setViewVersionId] = useState<string | null>(null);
   const [viewVersionNo, setViewVersionNo] = useState<number | null>(null);
 
+  const [fileOpBusy, setFileOpBusy] = useState<"rename" | "delete" | null>(null);
+
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
 
@@ -452,6 +454,53 @@ async function viewLatest() {
   setViewVersionId(null);
   setViewVersionNo(null);
   await openPreview(selectedFile);
+}
+
+async function renameSelectedFile() {
+  if (!selectedFile) return;
+
+  const current = selectedFile.name || "";
+  const nextRaw = (typeof window !== "undefined" ? window.prompt("Rename file", current) : null) ?? "";
+  const next = nextRaw.trim();
+  if (!next || next === current) return;
+
+  setPreviewErr(null);
+  setFileOpBusy("rename");
+  try {
+    const updated = await apiFetch<FileRow>(`/files/${selectedFile.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: next }),
+    });
+
+    // update local list without a full reload
+    setFiles((prev) => prev.map((x) => (x.id === updated.id ? { ...x, name: updated.name } : x)));
+  } catch (e: any) {
+    setPreviewErr(e?.message || String(e));
+  } finally {
+    setFileOpBusy(null);
+  }
+}
+
+async function deleteSelectedFile() {
+  if (!selectedFile || !selectedProjectId) return;
+
+  const ok = typeof window !== "undefined"
+    ? window.confirm(`Delete "${selectedFile.name}"?
+
+This deletes the file and all its versions.`)
+    : false;
+  if (!ok) return;
+
+  setPreviewErr(null);
+  setFileOpBusy("delete");
+  try {
+    await apiFetch<{ ok: boolean }>(`/files/${selectedFile.id}`, { method: "DELETE" });
+    await loadFiles(selectedProjectId);
+  } catch (e: any) {
+    setPreviewErr(e?.message || String(e));
+  } finally {
+    setFileOpBusy(null);
+  }
 }
 
   const visibleFiles = useMemo(() => {
@@ -970,6 +1019,23 @@ async function viewLatest() {
                     >
                         Open
                     </button>
+
+                    <button
+                        onClick={() => renameSelectedFile()}
+                        disabled={fileOpBusy !== null}
+                        style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3", fontWeight: 900, opacity: fileOpBusy ? 0.6 : 1, cursor: fileOpBusy ? "not-allowed" : "pointer" }}
+                    >
+                        Rename
+                    </button>
+
+                    <button
+                        onClick={() => deleteSelectedFile()}
+                        disabled={fileOpBusy !== null}
+                        style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #30363d", background: "#7f1d1d", color: "#ffffff", fontWeight: 900, opacity: fileOpBusy ? 0.6 : 1, cursor: fileOpBusy ? "not-allowed" : "pointer" }}
+                    >
+                        Delete
+                    </button>
+
                     </div>
                 </>
                 )}

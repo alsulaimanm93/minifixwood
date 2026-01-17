@@ -1,6 +1,7 @@
 
 import re
 import uuid
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +13,7 @@ from ..core.config import settings
 from ..db import get_db
 from ..models import User
 from ..schemas import (
-    FileCreate, FileOut, InitiateUploadRequest, InitiateUploadResponse,
+    FileCreate, FileRenameRequest, FileOut, InitiateUploadRequest, InitiateUploadResponse,
     CompleteUploadRequest, FileMetadataOut, PresignDownloadResponse, FileVersionOut,
 )
 from ..deps import get_current_user
@@ -53,6 +54,90 @@ async def get_file(file_id: UUID, db: AsyncSession = Depends(get_db), user: User
     if not row:
         raise HTTPException(404, "File not found")
     return FileOut(**row)
+
+
+async def _ensure_not_locked(file_id: UUID, db: AsyncSession, user: User):
+    now = datetime.now(timezone.utc)
+    q = await db.execute(text("""
+        SELECT id, locked_by, expires_at
+        FROM locks
+        WHERE file_id = :fid AND active = true
+        ORDER BY locked_at DESC
+        LIMIT 1
+    """), {"fid": str(file_id)})
+    row = q.mappings().one_or_none()
+    if not row:
+        return
+
+    # auto-expire stale locks
+    if row.get("expires_at") and row["expires_at"] <= now:
+        await db.execute(text("UPDATE locks SET active=false WHERE id=:id"), {"id": str(row["id"])})
+        return
+
+    if str(row["locked_by"]) != str(user.id):
+        raise HTTPException(409, detail={"message": "Locked", "locked_by": row["locked_by"], "expires_at": row.get("expires_at")})
+
+
+@router.patch("/{file_id}", response_model=FileOut)
+async def rename_file(file_id: UUID, req: FileRenameRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    # block rename if locked by someone else
+    await _ensure_not_locked(file_id, db, user)
+
+    q = await db.execute(text("""
+        SELECT id, project_id, kind, name, mime, size_bytes, current_version_id
+        FROM files
+        WHERE id = :fid
+    """), {"fid": str(file_id)})
+    cur = q.mappings().one_or_none()
+    if not cur:
+        raise HTTPException(404, "File not found")
+
+    new_name = safe_name(req.name or "")
+    if not new_name:
+        raise HTTPException(422, "Invalid name")
+
+    result = await db.execute(text("""
+        UPDATE files
+        SET name = :name, updated_at = now()
+        WHERE id = :fid
+        RETURNING id, project_id, kind, name, mime, size_bytes, current_version_id
+    """), {"fid": str(file_id), "name": new_name})
+    row = result.mappings().one()
+    await db.commit()
+    await _audit.write(db, user.id, "file.rename", "file", file_id, meta={"old_name": cur.get("name"), "new_name": new_name})
+    return FileOut(**row)
+
+
+@router.delete("/{file_id}")
+async def delete_file(file_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    # block delete if locked by someone else
+    await _ensure_not_locked(file_id, db, user)
+
+    q = await db.execute(text("SELECT id, name FROM files WHERE id = :fid"), {"fid": str(file_id)})
+    f = q.mappings().one_or_none()
+    if not f:
+        raise HTTPException(404, "File not found")
+
+    qk = await db.execute(text("SELECT object_key FROM file_versions WHERE file_id = :fid"), {"fid": str(file_id)})
+    keys = [r["object_key"] for r in qk.mappings().all() if r.get("object_key")]
+
+    await db.execute(text("DELETE FROM files WHERE id = :fid"), {"fid": str(file_id)})
+    await db.commit()
+    await _audit.write(db, user.id, "file.delete", "file", file_id, meta={"name": f.get("name")})
+
+    # best-effort object cleanup (DB delete already committed)
+    try:
+        from ..s3 import s3_internal_client
+        c = s3_internal_client()
+        for k in keys:
+            try:
+                c.delete_object(Bucket=settings.s3_bucket, Key=k)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return {"ok": True}
 
 
 def safe_name(name: str) -> str:
