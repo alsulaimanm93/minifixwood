@@ -859,7 +859,7 @@ async function openVersion(versionId: string) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        api_base: "http://localhost:8000",
+        api_base: "http://api:8000",
         token,
         file_id: selectedFile.id,
         filename: selectedFile.name,
@@ -1923,7 +1923,7 @@ This deletes the file and all its versions.`)
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({
-                                api_base: "http://localhost:8000",
+                                api_base: "http://api:8000",
                                 token:
                                   (typeof window !== "undefined" &&
                                     (localStorage.getItem("access_token") ||

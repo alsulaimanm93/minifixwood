@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-const UPSTREAM = process.env.API_UPSTREAM || "http://localhost:8000";
+const UPSTREAM = process.env.API_UPSTREAM || "http://api:8000";
 
 async function proxy(req: NextRequest, ctx: { params: { path: string[] } }) {
   const p = (ctx.params?.path || []).join("/");

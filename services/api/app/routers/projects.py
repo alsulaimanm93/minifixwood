@@ -295,7 +295,8 @@ async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db),
             # keep project creation working even if templates fail
             seed_result = {"created": 0, "skipped": 0, "error": str(e)}
 
-    await _audit.write(db, user.id, "project.create", "project", pid, meta={"name": req.name, "status": req.status, "seed": seed_result})
+    user_id = user.id
+    await _audit.write(db, user_id, "project.create", "project", pid, meta={"name": req.name, "status": req.status, "seed": seed_result})
     return ProjectOut(**row)
 
 
