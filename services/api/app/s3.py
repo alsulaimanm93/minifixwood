@@ -17,7 +17,7 @@ def s3_internal_client():
     return _client(settings.s3_endpoint_url)
 
 def s3_presign_client():
-    # for browser-reachable URLs (localhost)
+    # for browser-reachable URLs (public/proxied endpoint, NOT localhost)
     return _client(settings.s3_presign_endpoint_url)
 
 def ensure_bucket():
@@ -28,19 +28,15 @@ def ensure_bucket():
         c.create_bucket(Bucket=settings.s3_bucket)
 
 def presign_put(object_key: str, content_type: str | None, expires_sec: int = 900) -> tuple[str, dict]:
+    # IMPORTANT: do not sign Content-Type (browser reliability)
     c = s3_presign_client()
     params = {"Bucket": settings.s3_bucket, "Key": object_key}
-    if content_type:
-        params["ContentType"] = content_type
     url = c.generate_presigned_url(
         ClientMethod="put_object",
         Params=params,
         ExpiresIn=expires_sec,
     )
-    headers = {}
-    if content_type:
-        headers["Content-Type"] = content_type
-    return url, headers
+    return url, {}
 
 def presign_get(
     object_key: str,

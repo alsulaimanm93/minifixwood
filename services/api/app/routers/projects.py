@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text
+from sqlalchemy import select, text, inspect
 from uuid import UUID
 
 from ..core.config import settings
@@ -166,7 +166,7 @@ async def seed_project_templates(project_id: UUID, db: AsyncSession, user: User)
                 "name": display_name,
                 "mime": mime,
                 "size_bytes": size_bytes,
-                "created_by": str(user.id),
+                "created_by": str(user_id),
             })
             fid = f_ins.mappings().one()["id"]
 
@@ -190,7 +190,7 @@ async def seed_project_templates(project_id: UUID, db: AsyncSession, user: User)
                 "object_key": object_key,
                 "sha256": sha256,
                 "size_bytes": size_bytes,
-                "created_by": str(user.id),
+                "created_by": str(user_id),
             })
             ver_id = v_ins.mappings().one()["id"]
 
@@ -265,6 +265,7 @@ async def list_projects_all(db: AsyncSession = Depends(get_db), user: User = Dep
 async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     # Always create new projects under_preparation (ignore any client-sent status).
     forced_status = "under_preparation"
+    user_id = inspect(user).identity[0]  # PK without DB IO
 
     # Use raw SQL to keep it simple and explicit (timestamps handled in SQL).
     result = await db.execute(text("""
@@ -274,13 +275,13 @@ async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db),
           id, project_no, name, status, priority, created_at, updated_at,
           payment_date, max_days_to_finish, eta_date,
           total_amount::float8 as total_amount, paid_amount::float8 as paid_amount,
-          inventory_state, missing_items, inventory_notes
+          COALESCE(inventory_state, '{}'::jsonb) as inventory_state, COALESCE(missing_items, '{}'::jsonb)::text as missing_items, inventory_notes
     """), {
         "project_no": req.project_no,
         "name": req.name,
         "status": forced_status,
         "priority": req.priority,
-        "created_by": str(user.id),
+        "created_by": str(user_id),
     })
     row = result.mappings().one()
     await db.commit()
@@ -294,8 +295,6 @@ async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db),
             await db.rollback()
             # keep project creation working even if templates fail
             seed_result = {"created": 0, "skipped": 0, "error": str(e)}
-
-    user_id = user.id
     await _audit.write(db, user_id, "project.create", "project", pid, meta={"name": req.name, "status": req.status, "seed": seed_result})
     return ProjectOut(**row)
 
@@ -309,7 +308,7 @@ async def seed_templates(project_id: UUID, db: AsyncSession = Depends(get_db), u
         raise HTTPException(404, "Project not found")
 
     res = await seed_project_templates(project_id, db, user)
-    await _audit.write(db, user.id, "project.seed_templates", "project", project_id, meta=res)
+    await _audit.write(db, inspect(user).identity[0], "project.seed_templates", "project", project_id, meta=res)
     return {"ok": True, **res}
 
 
@@ -321,7 +320,7 @@ async def update_project(project_id: UUID, req: ProjectUpdate, db: AsyncSession 
           id, project_no, name, status, priority, created_at, updated_at,
           payment_date, max_days_to_finish, eta_date,
           total_amount::float8 as total_amount, paid_amount::float8 as paid_amount,
-          inventory_state, missing_items, inventory_notes
+          COALESCE(inventory_state, '{}'::jsonb) as inventory_state, COALESCE(missing_items, '{}'::jsonb)::text as missing_items, inventory_notes
         FROM projects
         WHERE id=:id
     """), {"id": str(project_id)})
@@ -371,7 +370,7 @@ async def update_project(project_id: UUID, req: ProjectUpdate, db: AsyncSession 
           id, project_no, name, status, priority, created_at, updated_at,
           payment_date, max_days_to_finish, eta_date,
           total_amount::float8 as total_amount, paid_amount::float8 as paid_amount,
-          inventory_state, missing_items, inventory_notes
+          COALESCE(inventory_state, '{}'::jsonb) as inventory_state, COALESCE(missing_items, '{}'::jsonb)::text as missing_items, inventory_notes
     """), {
         "id": str(project_id),
 
