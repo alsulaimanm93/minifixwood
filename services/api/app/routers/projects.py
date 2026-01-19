@@ -24,6 +24,17 @@ from . import _audit
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
+
+def _missing_items_str(v):
+    if v is None:
+        return None
+    if isinstance(v, str):
+        return v
+    try:
+        return json.dumps(v)
+    except Exception:
+        return str(v)
+
 def _calc_eta_skip_fridays(payment_date: date | None, max_days_to_finish: int | None) -> date | None:
     """Compute ETA by adding working days, skipping Fridays only."""
     if not payment_date or not max_days_to_finish or max_days_to_finish <= 0:
@@ -231,7 +242,7 @@ async def list_projects(status: str = "current", db: AsyncSession = Depends(get_
         max_days_to_finish=p.max_days_to_finish,
 
         inventory_state=(p.inventory_state or {}),
-        missing_items=p.missing_items,
+        missing_items=_missing_items_str(p.missing_items),
         inventory_notes=p.inventory_notes,
     ) for p in rows]
 
@@ -256,7 +267,7 @@ async def list_projects_all(db: AsyncSession = Depends(get_db), user: User = Dep
         max_days_to_finish=p.max_days_to_finish,
 
         inventory_state=(p.inventory_state or {}),
-        missing_items=p.missing_items,
+        missing_items=_missing_items_str(p.missing_items),
         inventory_notes=p.inventory_notes,
     ) for p in rows]
 
