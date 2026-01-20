@@ -43,3 +43,6 @@ login.json
 # bundles
 *.bundle
 
+
+# local backups
+*.bak.*
