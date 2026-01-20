@@ -436,9 +436,46 @@ export default function ProjectsWorkspace() {
   async function ensureThumbObjUrl(fileId: string) {
     if (!fileId) return;
     if (thumbObjUrls[fileId]) return;
-    const url = `/api/files/${fileId}/preview`;
+    const url = `/api/files//preview`;
     setThumbObjUrls((prev) => ({ ...(prev || {}), [fileId]: url }));
   }
+
+  async function ensureProjectThumb(projectId: string) {
+    if (!projectId) return;
+    // already has thumb set
+    if ((thumbs || {})[projectId]) return;
+
+    try {
+      const token = getAuthToken();
+      if (!token) return;
+
+      const res = await fetch(`/api/files?project_id=`, {
+        headers: { Authorization: `Bearer ` },
+      });
+      if (!res.ok) return;
+
+      const files = (await res.json()) as any[];
+      // prefer images first
+      const img = files.find((f) => (f?.kind || "").toLowerCase() === "images") || files[0];
+      const fid = img?.id;
+      if (!fid) return;
+
+      // set thumb mapping (project -> fileId)
+      setServerThumbs((prev) => ({ ...(prev || {}), [projectId]: fid }));
+      // optional: keep localStorage behavior for normal (non-incognito) sessions
+      setThumbs((prev) => {
+        const next = { ...(prev || {}), [projectId]: fid };
+        writeThumbs(next);
+        return next;
+      });
+
+      // ensure URL exists for that fileId
+      void ensureThumbObjUrl(fid);
+    } catch {
+      // ignore
+    }
+  }
+
   // When thumbs change, load missing object URLs
   useEffect(() => {
     const ids = Object.values(thumbs || {}).filter(Boolean);
@@ -466,6 +503,14 @@ export default function ProjectsWorkspace() {
       // preferred
       const rows = await apiFetch<Project[]>("/projects/all");
       setAll(rows);
+
+      // auto-pick thumbnails from server files (works in incognito)
+      try {
+        rows.forEach((p: any) => {
+          if (p?.id) void ensureProjectThumb(p.id);
+        });
+      } catch {}
+
       if (!selectedProjectId && rows.length) {
         const cur = rows.find((p) => p.status === "current") || rows[0];
         setSelectedProjectId(cur.id);
@@ -1129,7 +1174,7 @@ This deletes the file and all its versions.`)
                   ) : (
                     items.map((p) => {
                       const selected = p.id === selectedProjectId;
-                      const thumbId = (p as any).thumbnail_file_id || (thumbs || {})[p.id] || (serverThumbs || {})[p.id] || null;
+                      const thumbId = (thumbs || {})[p.id] || (serverThumbs || {})[p.id] || null;
                       return (
                         <button
                           key={p.id}
@@ -1159,7 +1204,7 @@ This deletes the file and all its versions.`)
                               onPointerDown={(e) => { e.stopPropagation(); }}
                               onMouseEnter={() => {
                                 if (!thumbId) return;
-                                  const url = thumbId ? `/api/files/${thumbId}/preview` : "";
+                                const url = thumbObjUrls[thumbId];
                                 if (!url) {
                                   void ensureThumbObjUrl(thumbId);
                                   return;
@@ -1197,7 +1242,7 @@ This deletes the file and all its versions.`)
                                 <div style={{ opacity: 0.8, fontWeight: 900 }}>...</div>
                               ) : thumbId ? (
                                 <img
-                                    src={thumbId ? `/api/files/${thumbId}/preview` : ""}
+                                  src={thumbId ? (thumbObjUrls[thumbId] || "/") : "/"}
                                   alt=""
                                   style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
                                   onLoad={() => {}}

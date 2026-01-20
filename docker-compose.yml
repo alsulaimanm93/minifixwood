@@ -27,7 +27,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/workshop
       REDIS_URL: redis://redis:6379/0
-      S3_PRESIGN_ENDPOINT_URL: https://minio.minifixqtr.com
+      S3_PRESIGN_ENDPOINT_URL: https://api.minifixqtr.com
 
 
 

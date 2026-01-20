@@ -438,7 +438,8 @@ export default function ProjectsWorkspace() {
     if (thumbObjUrls[fileId]) return;
     const url = `/api/files/${fileId}/preview`;
     setThumbObjUrls((prev) => ({ ...(prev || {}), [fileId]: url }));
-  }
+  }  }
+
   // When thumbs change, load missing object URLs
   useEffect(() => {
     const ids = Object.values(thumbs || {}).filter(Boolean);

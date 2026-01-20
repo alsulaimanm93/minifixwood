@@ -56,9 +56,6 @@ class ProjectOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    # Thumbnail (points to existing file)
-    thumbnail_file_id: Optional[UUID] = None
-
     # Payments / delivery
     eta_date: Optional[date] = None
     total_amount: Optional[float] = None
@@ -71,6 +68,17 @@ class ProjectOut(BaseModel):
     missing_items: Optional[str] = None
     inventory_notes: Optional[str] = None
 
+    # Payments / delivery
+    eta_date: Optional[date] = None
+    total_amount: Optional[float] = None
+    paid_amount: Optional[float] = None
+    payment_date: Optional[date] = None
+    max_days_to_finish: Optional[int] = None
+
+    # Inventory (lightweight now)
+    inventory_state: Dict[str, Any] = Field(default_factory=dict)
+    missing_items: Optional[str] = None
+    inventory_notes: Optional[str] = None
 # Inventory (high-end, lot-based)
 class SupplierCreate(BaseModel):
     name: str

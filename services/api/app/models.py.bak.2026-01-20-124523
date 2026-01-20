@@ -24,9 +24,6 @@ class Project(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
-    # Thumbnail (points to an existing file)
-    thumbnail_file_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id"), nullable=True)
-
     # Payments / delivery tracking
     eta_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     total_amount: Mapped[float | None] = mapped_column(Numeric, nullable=True)

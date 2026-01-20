@@ -237,6 +237,8 @@ async def list_projects(status: str = "current", db: AsyncSession = Depends(get_
 
         thumbnail_file_id=p.thumbnail_file_id,
 
+        thumbnail_file_id=p.thumbnail_file_id,
+
         eta_date=p.eta_date,
         total_amount=(float(p.total_amount) if p.total_amount is not None else None),
         paid_amount=(float(p.paid_amount) if p.paid_amount is not None else None),
@@ -261,8 +263,6 @@ async def list_projects_all(db: AsyncSession = Depends(get_db), user: User = Dep
         priority=p.priority,
         created_at=p.created_at,
         updated_at=p.updated_at,
-
-        thumbnail_file_id=p.thumbnail_file_id,
 
         eta_date=p.eta_date,
         total_amount=(float(p.total_amount) if p.total_amount is not None else None),

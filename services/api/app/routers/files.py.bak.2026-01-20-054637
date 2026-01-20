@@ -359,7 +359,7 @@ async def download_version(file_id: UUID, version_id: UUID, inline: int = 0, db:
     return RedirectResponse(url, status_code=302)
 
 @router.get("/{file_id}/preview")
-async def preview_file(file_id: UUID, db: AsyncSession = Depends(get_db)):
+async def preview_file(file_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     q = await db.execute(text("""
         SELECT v.object_key
         FROM files f
