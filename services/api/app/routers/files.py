@@ -259,6 +259,35 @@ async def complete_upload(file_id: UUID, req: CompleteUploadRequest, db: AsyncSe
         WHERE id = :fid
     """), {"ver_id": ver_id, "size_bytes": req.size_bytes, "fid": str(file_id)})
 
+    # If this upload is an image, and the project has no thumbnail yet,
+    # set this file as the project's default thumbnail (first image wins).
+    qf = await db.execute(text("""
+        SELECT project_id, mime, name
+        FROM files
+        WHERE id = :fid
+        LIMIT 1
+    """), {"fid": str(file_id)})
+    frow = qf.mappings().one_or_none()
+    if frow and frow.get("project_id"):
+        mime = (frow.get("mime") or "").lower()
+        name = (frow.get("name") or "").lower()
+        is_image = (
+            mime.startswith("image/")
+            or name.endswith(".jpg")
+            or name.endswith(".jpeg")
+            or name.endswith(".png")
+            or name.endswith(".webp")
+            or name.endswith(".gif")
+        )
+        if is_image:
+            await db.execute(text("""
+                UPDATE projects
+                SET thumbnail_file_id = :fid,
+                    updated_at = now()
+                WHERE id = :pid
+                  AND thumbnail_file_id IS NULL
+            """), {"fid": str(file_id), "pid": str(frow["project_id"])})
+
     await db.commit()
     await _audit.write(db, user.id, "file.upload.complete", "file_version", ver_id, meta={"file_id": str(file_id), "version_no": version_no})
 

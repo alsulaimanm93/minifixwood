@@ -17,7 +17,7 @@ from ..models import Project, User
 from datetime import date, timedelta
 import json
 
-from ..schemas import ProjectCreate, ProjectUpdate, ProjectOut
+from ..schemas import ProjectCreate, ProjectUpdate, ProjectThumbnailUpdate, ProjectOut
 from ..deps import get_current_user
 from ..s3 import ensure_bucket, s3_internal_client
 from . import _audit
@@ -325,6 +325,66 @@ async def seed_templates(project_id: UUID, db: AsyncSession = Depends(get_db), u
     res = await seed_project_templates(project_id, db, user)
     await _audit.write(db, inspect(user).identity[0], "project.seed_templates", "project", project_id, meta=res)
     return {"ok": True, **res}
+@router.patch("/{project_id}/thumbnail", response_model=ProjectOut)
+async def set_project_thumbnail(
+    project_id: UUID,
+    req: ProjectThumbnailUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    # ensure project exists
+    q = await db.execute(text("SELECT id FROM projects WHERE id=:id"), {"id": str(project_id)})
+    if not q.mappings().one_or_none():
+        raise HTTPException(404, "Project not found")
+
+    file_id = req.file_id
+
+    if file_id is not None:
+        # ensure file belongs to this project
+        qf = await db.execute(text("""
+            SELECT id, mime, name
+            FROM files
+            WHERE id = :fid AND project_id = :pid
+            LIMIT 1
+        """), {"fid": str(file_id), "pid": str(project_id)})
+        f = qf.mappings().one_or_none()
+        if not f:
+            raise HTTPException(404, "File not found in this project")
+
+        # basic image check (mime or extension)
+        mime = (f.get("mime") or "").lower()
+        name = (f.get("name") or "").lower()
+        is_image = (
+            mime.startswith("image/")
+            or name.endswith(".jpg")
+            or name.endswith(".jpeg")
+            or name.endswith(".png")
+            or name.endswith(".webp")
+            or name.endswith(".gif")
+        )
+        if not is_image:
+            raise HTTPException(422, "Thumbnail must be an image file")
+
+    result = await db.execute(text("""
+        UPDATE projects
+        SET thumbnail_file_id = :fid,
+            updated_at = now()
+        WHERE id = :pid
+        RETURNING
+          id, project_no, name, status, priority, created_at, updated_at,
+          thumbnail_file_id,
+          payment_date, max_days_to_finish, eta_date,
+          total_amount::float8 as total_amount, paid_amount::float8 as paid_amount,
+          COALESCE(inventory_state, '{}'::jsonb) as inventory_state,
+          COALESCE(missing_items, '{}'::jsonb)::text as missing_items,
+          inventory_notes
+    """), {"pid": str(project_id), "fid": (str(file_id) if file_id is not None else None)})
+
+    row = result.mappings().one()
+    await db.commit()
+
+    await _audit.write(db, inspect(user).identity[0], "project.thumbnail.set", "project", project_id, meta={"file_id": str(file_id) if file_id else None})
+    return ProjectOut(**row)
 
 
 @router.patch("/{project_id}", response_model=ProjectOut)
@@ -413,3 +473,48 @@ async def update_project(project_id: UUID, req: ProjectUpdate, db: AsyncSession 
         meta={"name": row.get("name"), "status": row.get("status")}
     )
     return ProjectOut(**row)
+
+
+@router.delete("/{project_id}")
+async def delete_project(project_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    # gather project info
+    qp = await db.execute(text("SELECT id, name FROM projects WHERE id=:id"), {"id": str(project_id)})
+    p = qp.mappings().one_or_none()
+    if not p:
+        raise HTTPException(404, "Project not found")
+
+    # gather S3 keys for ALL versions under this project (do this before deletes)
+    qk = await db.execute(text("""
+        SELECT fv.object_key
+        FROM file_versions fv
+        JOIN files f ON f.id = fv.file_id
+        WHERE f.project_id = :pid
+    """), {"pid": str(project_id)})
+    keys = [r["object_key"] for r in qk.mappings().all() if r.get("object_key")]
+
+    qf = await db.execute(text("SELECT id FROM files WHERE project_id = :pid"), {"pid": str(project_id)})
+    file_ids = [r["id"] for r in qf.mappings().all()]
+
+    # delete DB rows (files first, then project)
+    await db.execute(text("DELETE FROM files WHERE project_id = :pid"), {"pid": str(project_id)})
+    await db.execute(text("DELETE FROM projects WHERE id = :pid"), {"pid": str(project_id)})
+    await db.commit()
+
+    await _audit.write(
+        db, user.id, "project.delete", "project", project_id,
+        meta={"name": p.get("name"), "deleted_files": len(file_ids)}
+    )
+
+    # best-effort cleanup of objects (ignore errors)
+    try:
+        ensure_bucket()
+        c = s3_internal_client()
+        for k in keys:
+            try:
+                c.delete_object(Bucket=settings.s3_bucket, Key=k)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return {"ok": True, "deleted_files": len(file_ids)}

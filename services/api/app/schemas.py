@@ -47,6 +47,11 @@ class ProjectUpdate(BaseModel):
 
 
 
+class ProjectThumbnailUpdate(BaseModel):
+    # file_id must be a file that belongs to the same project (or null to clear)
+    file_id: Optional[UUID] = None
+
+
 class ProjectOut(BaseModel):
     id: UUID
     project_no: Optional[int]

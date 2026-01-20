@@ -19,6 +19,8 @@ type Project = {
   priority: number;
   updated_at: string;
 
+  thumbnail_file_id?: string | null;
+
   // Payments / delivery
   eta_date?: string | null;
   total_amount?: number | null;
@@ -190,6 +192,15 @@ export default function ProjectsWorkspace() {
   const [newErr, setNewErr] = useState<string | null>(null);
   const [newBusy, setNewBusy] = useState(false);
 
+  // Project rename/delete modals (UI-matching)
+  const [projRenameOpen, setProjRenameOpen] = useState(false);
+  const [projRenameDraft, setProjRenameDraft] = useState("");
+  const [projRenameErr, setProjRenameErr] = useState<string | null>(null);
+  const [projRenameBusy, setProjRenameBusy] = useState(false);
+
+  const [projDeleteOpen, setProjDeleteOpen] = useState(false);
+  const [projDeleteBusy, setProjDeleteBusy] = useState(false);
+
   async function createNewProject() {
     const name = (newName || "").trim();
     if (!name) {
@@ -220,6 +231,71 @@ export default function ProjectsWorkspace() {
       setNewErr(e?.message || String(e));
     } finally {
       setNewBusy(false);
+    }
+  }
+
+  function renameSelectedProject() {
+    if (!selectedProjectId) return;
+    const p = all.find((x) => x.id === selectedProjectId);
+    if (!p) return;
+
+    setProjRenameDraft(p.name || "");
+    setProjRenameErr(null);
+    setProjRenameOpen(true);
+  }
+
+  async function commitProjectRename() {
+    if (!selectedProjectId) return;
+    const p = all.find((x) => x.id === selectedProjectId);
+    if (!p) return;
+
+    const name = (projRenameDraft || "").trim();
+    if (!name) {
+      setProjRenameErr("Project name is required.");
+      return;
+    }
+    if (name === (p.name || "")) {
+      setProjRenameOpen(false);
+      setProjRenameErr(null);
+      return;
+    }
+
+    setProjRenameBusy(true);
+    setProjRenameErr(null);
+    try {
+      await apiFetch<Project>(`/projects/${selectedProjectId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      });
+      setProjRenameOpen(false);
+      await loadAll();
+    } catch (e: any) {
+      setProjRenameErr(e?.message || String(e));
+    } finally {
+      setProjRenameBusy(false);
+    }
+  }
+
+  function deleteSelectedProject() {
+    if (!selectedProjectId) return;
+    setProjDeleteOpen(true);
+  }
+
+  async function confirmDeleteSelectedProject() {
+    if (!selectedProjectId) return;
+
+    setProjDeleteBusy(true);
+    setErr(null);
+    try {
+      await apiFetch<{ ok: boolean }>(`/projects/${selectedProjectId}`, { method: "DELETE" });
+      setProjDeleteOpen(false);
+      setSelectedProjectId(null);
+      setSection("overview");
+      await loadAll();
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    } finally {
+      setProjDeleteBusy(false);
     }
   }
 
@@ -394,44 +470,22 @@ export default function ProjectsWorkspace() {
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
 
-  // Project thumbnails (client-side mapping: projectId -> fileId)
-  const [thumbs, setThumbs] = useState<Record<string, string>>({});
-  const [serverThumbs, setServerThumbs] = useState<Record<string, string>>({});
-  const [thumbPickProjectId, setThumbPickProjectId] = useState<string | null>(null);
-  const [thumbUploadingId, setThumbUploadingId] = useState<string | null>(null);
-  const thumbInputRef = React.useRef<HTMLInputElement | null>(null);
-
-  // fileId -> objectURL (avoids auth issues with <img src="/api/...">)
+  // fileId -> preview URL (kept as mapping to avoid re-computing)
   const [thumbObjUrls, setThumbObjUrls] = useState<Record<string, string>>({});
+
+  // Thumbnail picker modal (choose from existing project images)
+  const [thumbPickProjectId, setThumbPickProjectId] = useState<string | null>(null);
+  const [thumbPickOpen, setThumbPickOpen] = useState(false);
+  const [thumbPickBusy, setThumbPickBusy] = useState(false);
+  const [thumbPickErr, setThumbPickErr] = useState<string | null>(null);
+  const [thumbPickFiles, setThumbPickFiles] = useState<FileRow[]>([]);
+  const [thumbSavingProjectId, setThumbSavingProjectId] = useState<string | null>(null);
 
   // long-hover preview popup
   const [thumbPreviewUrl, setThumbPreviewUrl] = useState<string | null>(null);
   const hoverTimerRef = React.useRef<number | null>(null);
 
-  function readThumbs(): Record<string, string> {
-    if (typeof window === "undefined") return {};
-    try {
-      const raw = localStorage.getItem("minifix_thumbs_v1");
-      if (!raw) return {};
-      const obj = JSON.parse(raw);
-      if (!obj || typeof obj !== "object") return {};
-      return obj as Record<string, string>;
-    } catch {
-      return {};
-    }
-  }
-
-  function writeThumbs(next: Record<string, string>) {
-    if (typeof window === "undefined") return;
-    try {
-      localStorage.setItem("minifix_thumbs_v1", JSON.stringify(next || {}));
-    } catch {}
-  }
-
-  useEffect(() => {
-    setThumbs(readThumbs());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // (thumbnails are stored server-side now via projects.thumbnail_file_id)
 
   async function ensureThumbObjUrl(fileId: string) {
     if (!fileId) return;
@@ -441,22 +495,67 @@ export default function ProjectsWorkspace() {
   }
   // When thumbs change, load missing object URLs
   useEffect(() => {
-    const ids = Object.values(thumbs || {}).filter(Boolean);
+    const ids = (all || [])
+      .map((p: any) => p?.thumbnail_file_id)
+      .filter(Boolean) as string[];
     ids.forEach((id) => {
       if (!thumbObjUrls[id]) void ensureThumbObjUrl(id);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [thumbs]);
-  function openThumbPicker(projectId: string) {
+  }, [all]);
+  async function openThumbPicker(projectId: string) {
     if (!projectId) return;
-    if (thumbUploadingId) return;
+    if (thumbSavingProjectId) return;
 
     setThumbPickProjectId(projectId);
+    setThumbPickOpen(true);
+    setThumbPickBusy(true);
+    setThumbPickErr(null);
+    setThumbPickFiles([]);
 
-    const el = thumbInputRef.current;
-    if (el) {
-      el.value = "";
-      el.click();
+    try {
+      const res = await apiFetch<FileRow[]>(`/files?project_id=${encodeURIComponent(projectId)}`, { method: "GET" });
+      const imgs = (res || []).filter((f) => {
+        const n = (f.name || "").toLowerCase();
+        const m = (f.mime || "").toLowerCase();
+        return (
+          m.startsWith("image/") ||
+          n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png") || n.endsWith(".webp") || n.endsWith(".gif")
+        );
+      });
+
+      setThumbPickFiles(imgs);
+
+      // pre-warm preview URLs
+      imgs.slice(0, 24).forEach((f) => {
+        if (f?.id) void ensureThumbObjUrl(String(f.id));
+      });
+    } catch (e: any) {
+      setThumbPickErr(e?.message || String(e));
+    } finally {
+      setThumbPickBusy(false);
+    }
+  }
+
+  async function setThumbnail(projectId: string, fileId: string) {
+    if (!projectId || !fileId) return;
+    setThumbSavingProjectId(projectId);
+    setThumbPickErr(null);
+
+    try {
+      await apiFetch(`/projects/${projectId}/thumbnail`, {
+        method: "PATCH",
+        body: JSON.stringify({ file_id: fileId }),
+      });
+
+      await loadAll(); // refresh thumbnails in the board
+      setThumbPickOpen(false);
+      setThumbPickProjectId(null);
+      setThumbPickFiles([]);
+    } catch (e: any) {
+      setThumbPickErr(e?.message || String(e));
+    } finally {
+      setThumbSavingProjectId(null);
     }
   }
 
@@ -610,89 +709,13 @@ export default function ProjectsWorkspace() {
 
       setSection(uploadKind as any);
       await loadFiles(selectedProjectId);
+      await loadAll(); // in case the first uploaded image became the project thumbnail
       setUploadErr(null);
 
     } catch (e: any) {
       setUploadErr(e?.message || String(e));
     } finally {
       setUploading(false);
-    }
-  }
-
-  async function uploadThumbnailForProject(projectId: string, file: File) {
-    if (!projectId) return;
-
-    setUploadErr(null);
-    setThumbUploadingId(projectId);
-
-    try {
-      const uploadKind = "images";
-
-      // 1) create DB file row
-      const created = await apiFetch<FileRow>("/files", {
-        method: "POST",
-        body: JSON.stringify({
-          project_id: projectId,
-          kind: uploadKind,
-          name: file.name,
-          mime: file.type || null,
-          size_bytes: file.size,
-        }),
-      });
-
-      // 2) presign PUT
-      const init = await apiFetch<{ object_key: string; url: string; headers: Record<string, string> }>(
-        `/files/${created.id}/versions/initiate-upload`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            filename: file.name,
-            mime: file.type || "application/octet-stream",
-            size_bytes: file.size,
-          }),
-        }
-      );
-
-      // 3) upload bytes to MinIO/S3
-      const putResp = await fetch(init.url, {
-        method: "PUT",
-        headers: init.headers || {},
-        body: file,
-      });
-
-      if (!putResp.ok) {
-        const t = await putResp.text().catch(() => "");
-        throw new Error(`Upload failed: ${putResp.status} ${putResp.statusText}${t ? ` - ${t.slice(0, 200)}` : ""}`);
-      }
-
-      const etag = putResp.headers.get("etag") || putResp.headers.get("ETag") || null;
-
-      // 4) complete upload
-      await apiFetch(`/files/${created.id}/versions/complete-upload`, {
-        method: "POST",
-        body: JSON.stringify({
-          object_key: init.object_key,
-          etag,
-          sha256: null,
-          size_bytes: file.size,
-        }),
-      });
-
-      // Save thumbnail mapping (projectId -> fileId)
-      setThumbs((prev) => {
-        const next = { ...(prev || {}), [projectId]: String(created.id) };
-        writeThumbs(next);
-        return next;
-      });
-
-      // If you're currently inside that project, refresh its files list (optional but useful)
-      if (selectedProjectId === projectId) {
-        await loadFiles(projectId);
-      }
-    } catch (e: any) {
-      setUploadErr(e?.message || String(e));
-    } finally {
-      setThumbUploadingId(null);
     }
   }
 
@@ -1052,6 +1075,7 @@ This deletes the file and all its versions.`)
               + New
             </button>
 
+
             <button
               onClick={loadAll}
               style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
@@ -1077,23 +1101,129 @@ This deletes the file and all its versions.`)
           }}
         />
 
-        <input
-          ref={thumbInputRef}
-          type="file"
-          accept="image/*"
-          style={{ display: "none" }}
-          onChange={async (e) => {
-            const pid = thumbPickProjectId;
-            setThumbPickProjectId(null);
-
-            const f = e.target.files?.[0];
-            if (!pid || !f) return;
-
-            await uploadThumbnailForProject(pid, f);
-          }}
-        />
 
         {err && <div style={{ color: "#ff7b72", marginTop: 10 }}>{err}</div>}
+        {thumbPickOpen && (
+          <div
+            onClick={() => {
+              if (thumbPickBusy || thumbSavingProjectId) return;
+              setThumbPickOpen(false);
+              setThumbPickProjectId(null);
+              setThumbPickFiles([]);
+              setThumbPickErr(null);
+            }}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.55)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 60,
+              padding: 16,
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: "min(820px, 96vw)",
+                maxHeight: "80vh",
+                overflow: "auto",
+                borderRadius: 16,
+                border: "1px solid #30363d",
+                background: "#0b0f17",
+                padding: 14,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <div style={{ fontWeight: 950 }}>Choose thumbnail (from this project)</div>
+                <button
+                  disabled={thumbPickBusy || !!thumbSavingProjectId}
+                  onClick={() => {
+                    setThumbPickOpen(false);
+                    setThumbPickProjectId(null);
+                    setThumbPickFiles([]);
+                    setThumbPickErr(null);
+                  }}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: 10,
+                    border: "1px solid #30363d",
+                    background: "#0f1623",
+                    color: "#e6edf3",
+                    cursor: "pointer",
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+
+              {thumbPickErr && <div style={{ color: "#ff7b72", marginTop: 10 }}>{thumbPickErr}</div>}
+
+              {thumbPickBusy ? (
+                <div style={{ marginTop: 14, opacity: 0.75 }}>Loading images…</div>
+              ) : thumbPickFiles.length === 0 ? (
+                <div style={{ marginTop: 14, opacity: 0.75 }}>
+                  No images found in this project yet. Upload images to the project first, then pick one here.
+                </div>
+              ) : (
+                <div
+                  style={{
+                    marginTop: 12,
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
+                    gap: 10,
+                  }}
+                >
+                  {thumbPickFiles.map((f) => {
+                    const fid = String(f.id);
+                    const url = `/api/files/${fid}/preview`;
+                    return (
+                      <button
+                        key={fid}
+                        disabled={!!thumbSavingProjectId}
+                        onClick={() => {
+                          if (!thumbPickProjectId) return;
+                          void setThumbnail(thumbPickProjectId, fid);
+                        }}
+                        title={f.name}
+                        style={{
+                          textAlign: "left",
+                          borderRadius: 14,
+                          border: "1px solid #30363d",
+                          background: "#0f1623",
+                          color: "#e6edf3",
+                          padding: 8,
+                          cursor: "pointer",
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: "100%",
+                            aspectRatio: "1 / 1",
+                            borderRadius: 12,
+                            overflow: "hidden",
+                            border: "1px solid #30363d",
+                            background: "#0b0f17",
+                          }}
+                        >
+                          <img
+                            src={url}
+                            alt=""
+                            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                          />
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {f.name}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
           {STATUS_ORDER.map((st) => {
@@ -1129,7 +1259,7 @@ This deletes the file and all its versions.`)
                   ) : (
                     items.map((p) => {
                       const selected = p.id === selectedProjectId;
-                      const thumbId = (p as any).thumbnail_file_id || (thumbs || {})[p.id] || (serverThumbs || {})[p.id] || null;
+                      const thumbId = (p as any).thumbnail_file_id || null;
                       return (
                         <button
                           key={p.id}
@@ -1193,7 +1323,7 @@ This deletes the file and all its versions.`)
                                 cursor: "pointer",
                               }}
                             >
-                              {thumbUploadingId === p.id ? (
+                              {thumbSavingProjectId === p.id ? (
                                 <div style={{ opacity: 0.8, fontWeight: 900 }}>...</div>
                               ) : thumbId ? (
                                 <img
@@ -1434,6 +1564,44 @@ This deletes the file and all its versions.`)
                 <div style={{ opacity: 0.7, fontSize: 13 }}>
                   {selectedProject.name} - {SECTION_TITLES[section]}
                 </div>
+              </div>
+
+
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  onClick={() => renameSelectedProject()}
+                  disabled={!selectedProjectId}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 12,
+                    border: "1px solid #30363d",
+                    background: "#0b0f17",
+                    color: "#e6edf3",
+                    opacity: !selectedProjectId ? 0.6 : 1,
+                    cursor: !selectedProjectId ? "not-allowed" : "pointer",
+                    fontWeight: 900,
+                  }}
+                >
+                  Rename
+                </button>
+
+                <button
+                  onClick={() => deleteSelectedProject()}
+                  disabled={!selectedProjectId}
+                  title="Delete this project and all its files"
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 12,
+                    border: "1px solid #30363d",
+                    background: "#3b0a0a",
+                    color: "#ffd7d7",
+                    fontWeight: 900,
+                    opacity: !selectedProjectId ? 0.6 : 1,
+                    cursor: !selectedProjectId ? "not-allowed" : "pointer",
+                  }}
+                >
+                  Delete Project
+                </button>
               </div>
 
               {/* Open project button removed (unused) */}
@@ -2051,6 +2219,170 @@ This deletes the file and all its versions.`)
                 }}
               >
                 {newBusy ? "Creating..." : "Create"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {projRenameOpen && selectedProject && (
+        <div
+          onClick={() => { if (!projRenameBusy) { setProjRenameOpen(false); setProjRenameErr(null); } }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.65)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 9999,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(560px, 100%)",
+              border: "1px solid #30363d",
+              borderRadius: 16,
+              background: "#0b0f17",
+              padding: 14,
+            }}
+          >
+            <div style={{ fontWeight: 950, fontSize: 16 }}>Rename project</div>
+            <div style={{ opacity: 0.75, fontSize: 12, marginTop: 4 }}>
+              Current: <span style={{ fontWeight: 900 }}>{selectedProject.name}</span>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <input
+                autoFocus
+                value={projRenameDraft}
+                onChange={(e) => setProjRenameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    if (!projRenameBusy) { setProjRenameOpen(false); setProjRenameErr(null); }
+                  }
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (!projRenameBusy) commitProjectRename();
+                  }
+                }}
+                placeholder="Project name"
+                style={{
+                  width: "100%",
+                  padding: 10,
+                  borderRadius: 12,
+                  border: "1px solid #30363d",
+                  background: "#0f1623",
+                  color: "#e6edf3",
+                  fontSize: 14,
+                }}
+              />
+            </div>
+
+            {projRenameErr ? <div style={{ color: "#ff7b72", marginTop: 10 }}>{projRenameErr}</div> : null}
+
+            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button
+                onClick={() => { if (!projRenameBusy) { setProjRenameOpen(false); setProjRenameErr(null); } }}
+                disabled={projRenameBusy}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 12,
+                  border: "1px solid #30363d",
+                  background: "#0f1623",
+                  color: "#e6edf3",
+                  fontWeight: 900,
+                  opacity: projRenameBusy ? 0.6 : 1,
+                  cursor: projRenameBusy ? "not-allowed" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => commitProjectRename()}
+                disabled={projRenameBusy}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 12,
+                  border: "1px solid #30363d",
+                  background: "#1f6feb",
+                  color: "white",
+                  fontWeight: 900,
+                  opacity: projRenameBusy ? 0.6 : 1,
+                  cursor: projRenameBusy ? "not-allowed" : "pointer",
+                }}
+              >
+                {projRenameBusy ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {projDeleteOpen && selectedProject && (
+        <div
+          onClick={() => { if (!projDeleteBusy) setProjDeleteOpen(false); }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.65)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 9999,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(560px, 100%)",
+              border: "1px solid #30363d",
+              borderRadius: 16,
+              background: "#0b0f17",
+              padding: 14,
+            }}
+          >
+            <div style={{ fontWeight: 950, fontSize: 16 }}>Delete project?</div>
+            <div style={{ opacity: 0.75, fontSize: 12, marginTop: 6, lineHeight: 1.35 }}>
+              This will delete <span style={{ fontWeight: 900 }}>{selectedProject.name}</span> and <span style={{ fontWeight: 900 }}>ALL</span> its files.
+            </div>
+
+            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button
+                onClick={() => { if (!projDeleteBusy) setProjDeleteOpen(false); }}
+                disabled={projDeleteBusy}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 12,
+                  border: "1px solid #30363d",
+                  background: "#0f1623",
+                  color: "#e6edf3",
+                  fontWeight: 900,
+                  opacity: projDeleteBusy ? 0.6 : 1,
+                  cursor: projDeleteBusy ? "not-allowed" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => confirmDeleteSelectedProject()}
+                disabled={projDeleteBusy}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 12,
+                  border: "1px solid #30363d",
+                  background: "#7f1d1d",
+                  color: "#ffffff",
+                  fontWeight: 900,
+                  opacity: projDeleteBusy ? 0.6 : 1,
+                  cursor: projDeleteBusy ? "not-allowed" : "pointer",
+                }}
+              >
+                {projDeleteBusy ? "Deleting..." : "Delete"}
               </button>
             </div>
           </div>
