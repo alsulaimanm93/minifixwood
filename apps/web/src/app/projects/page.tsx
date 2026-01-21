@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 
 type Status =
@@ -101,6 +102,38 @@ function extOf(name: string) {
   return name.slice(idx + 1).toLowerCase();
 }
 
+function extFromMime(mime?: string | null) {
+  const m = String(mime || "").toLowerCase().trim();
+  if (!m) return "";
+  const parts = m.split("/");
+  if (parts.length !== 2) return "";
+  let e = parts[1] || "";
+  if (e.includes("+")) e = e.split("+")[0];
+  if (e === "jpeg") e = "jpg";
+  return e;
+}
+
+// Keep extension visible: "very-long-name...stuff.jpg" -> "very-long...stuff.jpg"
+function midEllipsisKeepExt(name: string, maxChars: number) {
+  const n = name || "";
+  if (n.length <= maxChars) return n;
+
+  const dot = n.lastIndexOf(".");
+  const hasExt = dot > 0 && dot < n.length - 1;
+
+  const ext = hasExt ? n.slice(dot) : ""; // includes "."
+  const base = hasExt ? n.slice(0, dot) : n;
+
+  // ensure we never drop the extension
+  const keepExtLen = ext.length;
+  const available = Math.max(6, maxChars - keepExtLen - 1); // 1 for "…"
+  const head = Math.max(4, Math.floor(available * 0.6));
+  const tail = Math.max(2, available - head);
+
+  const out = `${base.slice(0, head)}…${base.slice(-tail)}${ext}`;
+  return out.length > maxChars ? out.slice(0, maxChars - keepExtLen - 1) + "…" + ext : out;
+}
+
 function previewKind(name: string) {
   const e = extOf(name);
   const isImg = ["jpg", "jpeg", "png", "webp", "gif"].includes(e);
@@ -180,10 +213,45 @@ function calcBalance(total: number | null | undefined, paid: number | null | und
 }
 
 export default function ProjectsWorkspace() {
+  const router = useRouter();
   const [all, setAll] = useState<Project[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   const [projQ, setProjQ] = useState("");
+
+  // Mobile navigation (OneDrive-like): Projects -> Sections -> Files
+  const [isMobile, setIsMobile] = useState(false);
+  const [mobileView, setMobileView] = useState<"projects" | "sections" | "files">("projects");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: 900px)");
+    const apply = () => setIsMobile(!!mq.matches);
+
+    apply();
+    // modern browsers
+    try {
+      mq.addEventListener("change", apply);
+      return () => mq.removeEventListener("change", apply);
+    } catch {
+      // safari fallback
+      // @ts-ignore
+      mq.addListener(apply);
+      // @ts-ignore
+      return () => mq.removeListener(apply);
+    }
+  }, []);
+
+  // Project card size (Large/Medium/Small). Small uses grid.
+  const [projCardSize, setProjCardSize] = useState<"large" | "medium" | "small">("large");
+  const projectCardHeight = projCardSize === "small" ? 120 : projCardSize === "medium" ? 150 : 170;
+
+  function decProjCardSize() {
+    setProjCardSize((s) => (s === "large" ? "medium" : s === "medium" ? "small" : "small"));
+  }
+  function incProjCardSize() {
+    setProjCardSize((s) => (s === "small" ? "medium" : s === "medium" ? "large" : "large"));
+  }
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [section, setSection] = useState<SectionKey>("overview");
 
@@ -339,6 +407,12 @@ export default function ProjectsWorkspace() {
     to: Status;
   }>(null);
 
+  const [movePicker, setMovePicker] = useState<null | {
+    projectId: string;
+    name: string;
+    from: Status;
+  }>(null);
+
   const dragRef = React.useRef<{
     pid: string;
     from: Status;
@@ -481,9 +555,6 @@ export default function ProjectsWorkspace() {
   const [thumbPickFiles, setThumbPickFiles] = useState<FileRow[]>([]);
   const [thumbSavingProjectId, setThumbSavingProjectId] = useState<string | null>(null);
 
-  // long-hover preview popup
-  const [thumbPreviewUrl, setThumbPreviewUrl] = useState<string | null>(null);
-  const hoverTimerRef = React.useRef<number | null>(null);
 
   // (thumbnails are stored server-side now via projects.thumbnail_file_id)
 
@@ -1037,7 +1108,7 @@ This deletes the file and all its versions.`)
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "360px 260px 1fr",
+        gridTemplateColumns: isMobile ? "1fr" : "360px 260px 1fr",
         gap: 14,
         alignItems: "start",
       }}
@@ -1045,8 +1116,10 @@ This deletes the file and all its versions.`)
       {/* LEFT: project categories */}
       <div
         style={{
-          position: "sticky",
-          top: 12,
+          display: isMobile && mobileView !== "projects" ? "none" : "block",
+          position: isMobile ? "relative" : "sticky",
+          top: isMobile ? undefined : 12,
+          zIndex: 5,
           alignSelf: "start",
           border: "1px solid #30363d",
           borderRadius: 16,
@@ -1054,13 +1127,16 @@ This deletes the file and all its versions.`)
           padding: 12,
           maxHeight: "calc(100vh - 24px)",
           overflowY: "auto",
+          colorScheme: "dark",
+          scrollbarWidth: "thin",
+          scrollbarColor: "rgba(120,134,156,0.55) rgba(15,22,35,0.6)",
           overflowX: "hidden",
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", rowGap: 10 }}>
           <div style={{ fontWeight: 950, fontSize: 16 }}>Projects</div>
 
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end", maxWidth: "100%" }}>
             <button
               onClick={() => { setNewErr(null); setNewOpen(true); }}
               style={{
@@ -1075,10 +1151,49 @@ This deletes the file and all its versions.`)
               + New
             </button>
 
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <button
+                onClick={decProjCardSize}
+                title="Smaller cards"
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 12,
+                  border: "1px solid #30363d",
+                  background: "#0b0f17",
+                  color: "#e6edf3",
+                  fontWeight: 900,
+                  lineHeight: 1,
+                }}
+              >
+                −
+              </button>
+
+              <div style={{ minWidth: 64, textAlign: "center", opacity: 0.75, fontSize: 12, fontWeight: 900 }}>
+                {projCardSize === "large" ? "Large" : projCardSize === "medium" ? "Medium" : "Small"}
+              </div>
+
+              <button
+                onClick={incProjCardSize}
+                title="Larger cards"
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 12,
+                  border: "1px solid #30363d",
+                  background: "#0b0f17",
+                  color: "#e6edf3",
+                  fontWeight: 900,
+                  lineHeight: 1,
+                }}
+              >
+                +
+              </button>
+            </div>
+
+
 
             <button
               onClick={loadAll}
-              style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
+              style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", whiteSpace: "nowrap", flex: "0 0 auto" }}
             >
               Refresh
             </button>
@@ -1092,6 +1207,8 @@ This deletes the file and all its versions.`)
           style={{
             width: "100%",
             marginTop: 10,
+            boxSizing: "border-box",
+            display: "block",
             padding: 10,
             borderRadius: 12,
             border: "1px solid #30363d",
@@ -1119,7 +1236,7 @@ This deletes the file and all its versions.`)
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              zIndex: 60,
+              zIndex: 30000,
               padding: 16,
             }}
           >
@@ -1135,7 +1252,7 @@ This deletes the file and all its versions.`)
                 padding: 14,
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", rowGap: 10 }}>
                 <div style={{ fontWeight: 950 }}>Choose thumbnail (from this project)</div>
                 <button
                   disabled={thumbPickBusy || !!thumbSavingProjectId}
@@ -1249,9 +1366,10 @@ This deletes the file and all its versions.`)
                 <div
                   style={{
                     padding: "0 8px 8px",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 6,
+                    display: projCardSize === "small" ? "grid" : "flex",
+                    gridTemplateColumns: projCardSize === "small" ? "repeat(2, minmax(0, 1fr))" : undefined,
+                    flexDirection: projCardSize === "small" ? undefined : "column",
+                    gap: projCardSize === "small" ? 10 : 6,
                   }}
                 >
                   {items.length === 0 ? (
@@ -1271,12 +1389,14 @@ This deletes the file and all its versions.`)
                             if (suppressClickRef.current) return;
                             setSelectedProjectId(p.id);
                             setSection("overview");
+                            if (isMobile) setMobileView("sections");
                           }}
                           style={{
                             textAlign: "left",
                             width: "100%",
-                            padding: "10px 10px",
+                            padding: 0,
                             borderRadius: 12,
+                            overflow: "hidden",
                             border: "1px solid #30363d",
                             background: selected ? "#111827" : "#0f1623",
                             color: "#e6edf3",
@@ -1284,86 +1404,111 @@ This deletes the file and all its versions.`)
                             userSelect: "none",
                           }}
                         >
-                          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                            <div
+                          <div style={{ position: "relative", width: "100%", height: projectCardHeight,
+ background: "#0b0f17" }}>
+                            {thumbSavingProjectId === p.id ? (
+                              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.9, fontWeight: 900 }}>...</div>
+                            ) : thumbId ? (
+                              <img
+                                src={thumbId ? `/api/files/${thumbId}/preview` : ""}
+                                alt=""
+                                style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                              />
+                            ) : (
+                              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 40, fontWeight: 950, opacity: 0.85 }}>+</div>
+                            )}
+
+                            <button
                               onPointerDown={(e) => { e.stopPropagation(); }}
-                              onMouseEnter={() => {
-                                if (!thumbId) return;
-                                  const url = thumbId ? `/api/files/${thumbId}/preview` : "";
-                                if (!url) {
-                                  void ensureThumbObjUrl(thumbId);
-                                  return;
-                                }
-                                if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
-                                hoverTimerRef.current = window.setTimeout(() => {
-                                  setThumbPreviewUrl(url);
-                                }, 450);
-                              }}
-                              onMouseLeave={() => {
-                                if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current);
-                                hoverTimerRef.current = null;
-                                setThumbPreviewUrl(null);
-                              }}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                openThumbPicker(p.id);
+                                setMovePicker({ projectId: p.id, name: p.name, from: p.status });
                               }}
-                              title={thumbId ? "Change thumbnail" : "Add thumbnail"}
+
+                              title="Move project"
                               style={{
-                                width: 44,
-                                height: 44,
+                                position: "absolute",
+                                top: 10,
+                                right: 10,
+                                width: 34,
+                                height: 34,
                                 borderRadius: 12,
                                 border: "1px solid #30363d",
-                                background: "#0b0f17",
+                                background: "rgba(15,22,35,0.85)",
+                                color: "#e6edf3",
+                                fontWeight: 950,
+                                cursor: "pointer",
                                 display: "flex",
                                 alignItems: "center",
                                 justifyContent: "center",
-                                overflow: "hidden",
-                                flex: "0 0 auto",
-                                cursor: "pointer",
+                                lineHeight: 1,
                               }}
                             >
-                              {thumbSavingProjectId === p.id ? (
-                                <div style={{ opacity: 0.8, fontWeight: 900 }}>...</div>
-                              ) : thumbId ? (
-                                <img
-                                    src={thumbId ? `/api/files/${thumbId}/preview` : ""}
-                                  alt=""
-                                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-                                  onLoad={() => {}}
-                                />
-                              ) : (
-                                <div style={{ fontSize: 20, fontWeight: 950, opacity: 0.85 }}>+</div>
-                              )}
-                            </div>
+                              ✎
+                            </button>
 
-                            <div style={{ minWidth: 0, flex: 1 }}>
-                              <div style={{ fontWeight: 900, lineHeight: 1.2, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {p.name}
-                              </div>
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 4, opacity: 0.75, fontSize: 12 }}>
-                                <div>P{p.priority}</div>
-                                <div style={{ whiteSpace: "nowrap" }}>{fmtUpdatedAt(p.updated_at)}</div>
-                              </div>
+                            <div
+                              style={{
+                                position: "absolute",
+                                inset: 0,
+                                background:
+                                  "linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.65) 35%, rgba(0,0,0,0.0) 72%)",
+                                opacity: 1,
+                                pointerEvents: "none",
+                              }}
+                            />
 
-                              {(p.total_amount != null || p.paid_amount != null || p.eta_date) ? (
-                                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 2, opacity: 0.62, fontSize: 11 }}>
-                                  <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                    Paid {fmtMoney(p.paid_amount)}/{fmtMoney(p.total_amount)}
-                                  </div>
-                                  <div style={{ whiteSpace: "nowrap" }}>ETA {fmtDateShort(p.eta_date)}</div>
+                            <div
+                              style={{
+                                position: "absolute",
+                                left: 12,
+                                right: 12,
+                                bottom: 10,
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "flex-end",
+                                gap: 10,
+                                pointerEvents: "none",
+
+                                padding: "8px 10px",
+                                borderRadius: 14,
+                                background: "rgba(0,0,0,0.18)",
+                                border: "1px solid rgba(255,255,255,0.08)",
+                                backdropFilter: "blur(10px)",
+                                WebkitBackdropFilter: "blur(10px)",
+                                boxShadow: "0 10px 30px rgba(0,0,0,0.22)",
+                              }}
+                            >
+                              <div style={{ minWidth: 0 }}>
+                                <div
+                                  style={{
+                                    fontWeight: 950,
+                                    lineHeight: 1.2,
+                                    fontSize: 15,
+                                    color: "#ffffff",
+                                    textShadow: "0 2px 12px rgba(0,0,0,0.95)",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {p.name}
                                 </div>
-                              ) : null}
 
-                              {(p.total_amount != null || p.paid_amount != null || p.eta_date) ? (
-                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 2, opacity: 0.72, fontSize: 11 }}>
-                                  <div style={{ whiteSpace: "nowrap" }}>
-                                    Paid {fmtMoney(p.paid_amount)}/{fmtMoney(p.total_amount)}
-                                  </div>
-                                  <div style={{ whiteSpace: "nowrap" }}>ETA {fmtDateShort(p.eta_date)}</div>
+                                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 4, opacity: 0.9, fontSize: 10 }}>
+                                  <div>P{p.priority}</div>
+                                  {(p.total_amount != null || p.paid_amount != null) ? (
+                                    <div style={{ whiteSpace: "nowrap" }}>
+                                      Paid {fmtMoney(p.paid_amount)}/{fmtMoney(p.total_amount)}
+                                    </div>
+                                  ) : null}
+                                  {p.eta_date ? <div style={{ whiteSpace: "nowrap" }}>ETA {fmtDateShort(p.eta_date)}</div> : null}
                                 </div>
-                              ) : null}
+                              </div>
 
+                              <div style={{ whiteSpace: "nowrap", opacity: 0.95, fontSize: 11, color: "#ffffff", textShadow: "0 2px 10px rgba(0,0,0,0.9)" }}>
+                                {fmtUpdatedAt(p.updated_at)}
+                              </div>
                             </div>
                           </div>
                         </button>
@@ -1377,47 +1522,6 @@ This deletes the file and all its versions.`)
         </div>
       </div>
 
-      {/* Thumbnail preview popup (long hover) */}
-      {thumbPreviewUrl ? (
-        <div
-          onMouseDown={() => setThumbPreviewUrl(null)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 12000,
-            background: "rgba(0,0,0,0.55)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 16,
-          }}
-        >
-          <div
-            onMouseDown={(e) => e.stopPropagation()}
-            style={{
-              maxWidth: 820,
-              width: "100%",
-              borderRadius: 16,
-              border: "1px solid #30363d",
-              background: "#0b0f17",
-              padding: 12,
-              boxShadow: "0 18px 50px rgba(0,0,0,0.55)",
-            }}
-          >
-            <img
-              src={thumbPreviewUrl}
-              alt=""
-              style={{
-                width: "100%",
-                maxHeight: "70vh",
-                objectFit: "contain",
-                display: "block",
-                borderRadius: 12,
-              }}
-            />
-          </div>
-        </div>
-      ) : null}
 
       {/* Drag ghost */}
       {dragging ? (
@@ -1442,6 +1546,126 @@ This deletes the file and all its versions.`)
           </div>
           <div style={{ opacity: 0.75, fontSize: 12, marginTop: 4 }}>
             Move to: {hoverStatus ? STATUS_TITLES[hoverStatus] : "—"}
+          </div>
+        </div>
+      ) : null}
+
+      {movePicker ? (
+        <div
+          onMouseDown={() => setMovePicker(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 30000,
+            background: "rgba(0,0,0,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              width: 560,
+              maxWidth: "100%",
+              borderRadius: 16,
+              border: "1px solid #30363d",
+              background: "#0b0f17",
+              color: "#e6edf3",
+              padding: 16,
+              boxShadow: "0 18px 50px rgba(0,0,0,0.55)",
+            }}
+          >
+            <div style={{ fontWeight: 950, fontSize: 16 }}>Move project</div>
+            <div style={{ marginTop: 8, opacity: 0.85, lineHeight: 1.35, fontSize: 12 }}>
+              <span style={{ fontWeight: 900 }}>{movePicker.name}</span> — currently{" "}
+              <span style={{ fontWeight: 900 }}>{STATUS_TITLES[movePicker.from]}</span>
+            </div>
+
+            {/* Sorted list (top -> bottom) */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
+              {STATUS_ORDER.map((s) => {
+                const disabled = s === movePicker.from;
+                const sk = String(s);
+
+                const label =
+                  sk === "current" ? "Current Projects" :
+                  sk === "finished" ? "Finished Projects" :
+                  sk === "rejected" ? "Rejected Projects" :
+                  STATUS_TITLES[s];
+
+                return (
+                  <button
+                    key={sk}
+                    disabled={disabled}
+                    onClick={() => {
+                      setMovePicker(null);
+                      setConfirmMove({
+                        projectId: movePicker.projectId,
+                        name: movePicker.name,
+                        from: movePicker.from,
+                        to: s,
+                      });
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "12px 14px",
+                      borderRadius: 14,
+                      border: "1px solid #30363d",
+                      background: disabled ? "rgba(15,22,35,0.55)" : "#0f1623",
+                      color: "#e6edf3",
+                      cursor: disabled ? "not-allowed" : "pointer",
+                      fontWeight: 900,
+                      opacity: disabled ? 0.55 : 1,
+                      textAlign: "left",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <span>{label}</span>
+                    <span style={{ opacity: 0.65, fontWeight: 900 }}>›</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 14 }}>
+              {/* Different style: dashed / ghost */}
+              <button
+                onClick={() => {
+                  setMovePicker(null);
+                  openThumbPicker(movePicker.projectId);
+                }}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 14,
+                  border: "1px dashed rgba(255,255,255,0.18)",
+                  background: "transparent",
+                  color: "rgba(230,237,243,0.92)",
+                  cursor: "pointer",
+                  fontWeight: 800,
+                }}
+              >
+                Change thumbnail
+              </button>
+
+              <button
+                onClick={() => setMovePicker(null)}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 14,
+                  border: "1px solid #30363d",
+                  background: "#0f1623",
+                  color: "#e6edf3",
+                  cursor: "pointer",
+                  fontWeight: 800,
+                }}
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
@@ -1502,8 +1726,10 @@ This deletes the file and all its versions.`)
       {/* MIDDLE: sections inside project */}
       <div
         style={{
-          position: "sticky",
-          top: 12,
+          display: isMobile && mobileView !== "sections" ? "none" : "block",
+          position: isMobile ? "relative" : "sticky",
+          top: isMobile ? undefined : 12,
+
           alignSelf: "start",
           border: "1px solid #30363d",
           borderRadius: 16,
@@ -1517,7 +1743,47 @@ This deletes the file and all its versions.`)
           <div style={{ opacity: 0.75 }}>Select a project</div>
         ) : (
           <>
-            <div style={{ fontWeight: 950, fontSize: 14, lineHeight: 1.25 }}>{selectedProject.name}</div>
+            {isMobile ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                <button
+                  onClick={() => setMobileView("projects")}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 12,
+                    border: "1px solid #30363d",
+                    background: "#0b0f17",
+                    color: "#e6edf3",
+                    fontWeight: 950,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    lineHeight: 1,
+                    flex: "0 0 auto",
+                  }}
+                  title="Back"
+                >
+                  ←
+                </button>
+
+                <div
+                  style={{
+                    fontWeight: 950,
+                    fontSize: 14,
+                    lineHeight: 1.25,
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {selectedProject.name}
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontWeight: 950, fontSize: 14, lineHeight: 1.25 }}>{selectedProject.name}</div>
+            )}
             <div style={{ opacity: 0.75, fontSize: 12, marginTop: 4 }}>{STATUS_TITLES[selectedProject.status] || selectedProject.status}</div>
 
             <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -1526,7 +1792,10 @@ This deletes the file and all its versions.`)
                 return (
                   <button
                     key={k}
-                    onClick={() => setSection(k)}
+                    onClick={() => {
+                      setSection(k);
+                      if (isMobile) setMobileView("files");
+                    }}
                     style={{
                       display: "flex",
                       justifyContent: "space-between",
@@ -1553,16 +1822,51 @@ This deletes the file and all its versions.`)
       </div>
 
       {/* RIGHT: work area */}
-      <div style={{ border: "1px solid #30363d", borderRadius: 16, background: "#0f1623", padding: 14, minHeight: 560 }}>
+      <div
+        style={{
+          border: "1px solid #30363d",
+          borderRadius: 16,
+          background: "#0f1623",
+          padding: 14,
+          minHeight: 560,
+          display: isMobile && mobileView !== "files" ? "none" : "block",
+        }}
+      >
         {!selectedProject ? (
           <div style={{ opacity: 0.75 }}>Pick a project from the left.</div>
         ) : (
           <>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-              <div>
-                <div style={{ fontWeight: 950, fontSize: 18 }}>Workspace</div>
-                <div style={{ opacity: 0.7, fontSize: 13 }}>
-                  {selectedProject.name} - {SECTION_TITLES[section]}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                {isMobile ? (
+                  <button
+                    onClick={() => setMobileView("sections")}
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 12,
+                      border: "1px solid #30363d",
+                      background: "#0b0f17",
+                      color: "#e6edf3",
+                      fontWeight: 950,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      lineHeight: 1,
+                      flex: "0 0 auto",
+                    }}
+                    title="Back"
+                  >
+                    ←
+                  </button>
+                ) : null}
+
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 950, fontSize: 18 }}>Workspace</div>
+                  <div style={{ opacity: 0.7, fontSize: 13 }}>
+                    {selectedProject.name} - {SECTION_TITLES[section]}
+                  </div>
                 </div>
               </div>
 
@@ -1778,13 +2082,13 @@ This deletes the file and all its versions.`)
               </details>
             ) : null}
 
-            <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "0.9fr 1.1fr", gap: 14, alignItems: "start" }}>
+            <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "0.9fr 1.1fr", gap: 14, alignItems: "start" }}>
             {/* Files list */}
             <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minHeight: 520 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", rowGap: 10 }}>
                 <div style={{ fontWeight: 900, fontSize: 15 }}>Files • {SECTION_TITLES[section]}</div>
 
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end", maxWidth: "100%" }}>
                   <input
                     id="uploadInput"
                     type="file"
@@ -1876,10 +2180,28 @@ This deletes the file and all its versions.`)
                         }}
                         >
                         <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: 900, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.name}</div>
-                            <div style={{ opacity: 0.75, fontSize: 12 }}>
-                            {f.kind} - {fmtSize(f.size_bytes)}
-                            </div>
+                          <div
+                            style={{
+                              fontWeight: 900,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+
+                              // Mobile: 2 lines max (no horizontal drag)
+                              display: isMobile ? "-webkit-box" : "block",
+                              WebkitLineClamp: isMobile ? 2 : undefined,
+                              WebkitBoxOrient: isMobile ? "vertical" : undefined,
+                              whiteSpace: isMobile ? "normal" : "nowrap",
+                              wordBreak: "break-word",
+                              lineHeight: 1.25,
+                            }}
+                            title={f.name}
+                          >
+                            {isMobile ? midEllipsisKeepExt(f.name, 46) : f.name}
+                          </div>
+
+                          <div style={{ opacity: 0.75, fontSize: 12, whiteSpace: "nowrap" }}>
+                            {f.kind} - {extOf(f.name) || extFromMime(f.mime) || "file"} - {fmtSize(f.size_bytes)}
+                          </div>
                         </div>
                         <div style={{ opacity: 0.7, fontSize: 12, whiteSpace: "nowrap" }}>{busyFileId === f.id ? "..." : ""}</div>
                         </button>

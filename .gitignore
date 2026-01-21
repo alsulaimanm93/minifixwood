@@ -46,3 +46,11 @@ login.json
 
 # local backups
 *.bak.*
+
+# ChatGPT/debug bundles (do not commit)
+*.tgz
+*.tar.gz
+debug-pack.tar.gz
+thumbs-debug.tar.gz
+hr-online-pack.tgz
+hr-online-pack/
