@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .core.config import settings
-from .routers import auth, projects, files, locks, jobs, inventory
+from .routers import auth, projects, files, locks, jobs, inventory, hr, admin
 
 app = FastAPI(title="Workshop API", version="0.1.0")
 
@@ -19,6 +19,8 @@ app.include_router(files.router)
 app.include_router(locks.router)
 app.include_router(jobs.router)
 app.include_router(inventory.router)
+app.include_router(hr.router)
+app.include_router(admin.router)
 
 @app.get("/health")
 async def health():
