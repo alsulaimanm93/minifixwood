@@ -143,6 +143,156 @@ function currentMonthYYYYMM() {
   return `${y}-${m}`;
 }
 
+function _ymAdd(ym: string, deltaMonths: number) {
+  const y = Number(String(ym).slice(0, 4));
+  const m = Number(String(ym).slice(5, 7));
+  const d = new Date(Date.UTC(y, (m - 1) + deltaMonths, 1));
+  const yy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  return `${yy}-${mm}`;
+}
+
+function buildMonthOptions(centerYM: string, backMonths = 24, forwardMonths = 2) {
+  const out: string[] = [];
+  for (let i = -backMonths; i <= forwardMonths; i++) out.push(_ymAdd(centerYM, i));
+  // newest first feels better in dropdown
+  return out.reverse();
+}
+
+function MonthYearPicker({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const parseYear = (ym: string) => {
+    const y = Number(String(ym).slice(0, 4));
+    return Number.isFinite(y) && y >= 1970 && y <= 2100 ? y : new Date().getFullYear();
+  };
+
+  const [year, setYear] = useState<number>(parseYear(value));
+
+  const months = [
+    { mm: "01", label: "Jan" },
+    { mm: "02", label: "Feb" },
+    { mm: "03", label: "Mar" },
+    { mm: "04", label: "Apr" },
+    { mm: "05", label: "May" },
+    { mm: "06", label: "Jun" },
+    { mm: "07", label: "Jul" },
+    { mm: "08", label: "Aug" },
+    { mm: "09", label: "Sep" },
+    { mm: "10", label: "Oct" },
+    { mm: "11", label: "Nov" },
+    { mm: "12", label: "Dec" },
+  ];
+
+  return (
+    <div style={{ position: "relative", display: "inline-block" }}>
+      <button
+        onClick={() => {
+          setYear(parseYear(value));
+          setOpen((v) => !v);
+        }}
+        style={{
+          padding: "8px 34px 8px 10px",
+          borderRadius: 12,
+          border: "1px solid #30363d",
+          background: "#0b0f17",
+          color: "#e6edf3",
+          width: 140,
+          fontWeight: 900,
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+        title="Pick month"
+      >
+        {value || "YYYY-MM"}
+        <span style={{ float: "right", opacity: 0.9 }}>▾</span>
+      </button>
+
+      {open && (
+        <>
+          {/* click-outside overlay */}
+          <div
+            onClick={() => setOpen(false)}
+            style={{ position: "fixed", inset: 0, zIndex: 40 }}
+          />
+
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(100% + 8px)",
+              left: 0,
+              zIndex: 50,
+              width: 280,
+              maxWidth: "90vw",
+              border: "1px solid #30363d",
+              borderRadius: 14,
+              background: "#0f1623",
+              boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
+              padding: 10,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+              <button
+                onClick={() => setYear((y) => y - 1)}
+                style={{ padding: "6px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", fontWeight: 950, cursor: "pointer" }}
+                aria-label="Previous year"
+              >
+                ←
+              </button>
+
+              <div style={{ fontWeight: 950, opacity: 0.95 }}>{year}</div>
+
+              <button
+                onClick={() => setYear((y) => y + 1)}
+                style={{ padding: "6px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", fontWeight: 950, cursor: "pointer" }}
+                aria-label="Next year"
+              >
+                →
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
+              {months.map((m) => {
+                const ym = `${year}-${m.mm}`;
+                const active = ym === value;
+                return (
+                  <button
+                    key={ym}
+                    onClick={() => {
+                      onChange(ym);
+                      setOpen(false);
+                    }}
+                    style={{
+                      padding: "10px 10px",
+                      borderRadius: 12,
+                      border: active ? "1px solid #1f6feb" : "1px solid #30363d",
+                      background: active ? "#1f6feb" : "#0b0f17",
+                      color: "#e6edf3",
+                      fontWeight: 950,
+                      cursor: "pointer",
+                      textAlign: "center",
+                    }}
+                    title={ym}
+                  >
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+
 function normEmail(v: any) {
   return String(v || "").trim().toLowerCase();
 }
@@ -161,6 +311,23 @@ export default function HrPayrollPage() {
   const [busy, setBusy] = useState(false);
   const [apiOnline, setApiOnline] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+
+  // Mobile layout switch
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: 900px)");
+    const on = () => setIsMobile(!!mq.matches);
+    on();
+    // Safari/older fallback
+    if ((mq as any).addEventListener) (mq as any).addEventListener("change", on);
+    else (mq as any).addListener(on);
+    return () => {
+      if ((mq as any).removeEventListener) (mq as any).removeEventListener("change", on);
+      else (mq as any).removeListener(on);
+    };
+  }, []);
+
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [salaries, setSalaries] = useState<SalaryRow[]>([]);
@@ -300,6 +467,13 @@ export default function HrPayrollPage() {
   const [attEmpId, setAttEmpId] = useState<string | null>(null);
   const [attRows, setAttRows] = useState<AttendanceRow[]>([]);
   const [attBusy, setAttBusy] = useState(false);
+
+  // Attendance range picker (flight-style)
+  const [attPickStart, setAttPickStart] = useState<number | null>(null);
+  const [attPickEnd, setAttPickEnd] = useState<number | null>(null);
+  const [attBulkStatus, setAttBulkStatus] = useState<string>("leave");
+  const [attBulkDeduct, setAttBulkDeduct] = useState<boolean>(true);
+  const [attBulkBusy, setAttBulkBusy] = useState(false);
 
   // Payments modal
   const [paymOpen, setPaymOpen] = useState(false);
@@ -651,6 +825,14 @@ export default function HrPayrollPage() {
     setAttOpen(true);
     setAttBusy(true);
     setErr(null);
+
+    // reset range UI
+    setAttPickStart(null);
+    setAttPickEnd(null);
+    setAttBulkStatus("leave");
+    setAttBulkDeduct(true);
+    setAttBulkBusy(false);
+
     try {
       const rows = await apiFetch<AttendanceRow[]>(`/hr/attendance?month=${month}&employee_id=${empId}`);
       setAttRows(Array.isArray(rows) ? rows : []);
@@ -662,37 +844,84 @@ export default function HrPayrollPage() {
     }
   }
 
+  function _firstDowMon(ym: string) {
+    const { y, m } = _monthRange(ym);
+    const dowSun0 = new Date(Date.UTC(y, m - 1, 1)).getUTCDay(); // 0..6, Sun=0
+    return (dowSun0 + 6) % 7; // 0..6, Mon=0
+  }
+
+  function _pad2(n: number) {
+    return String(n).padStart(2, "0");
+  }
+
+  async function upsertAttendance(day: string, status: string, deduct: boolean) {
+    if (!attEmpId) return null;
+
+    const st = String(status || "present").trim().toLowerCase();
+    const ded = st === "present" ? false : !!deduct;
+
+    const row = await apiFetch<AttendanceRow>("/hr/attendance", {
+      method: "POST",
+      body: JSON.stringify({
+        employee_id: attEmpId,
+        day,
+        status: st,
+        deduct: ded,
+        note: null,
+      }),
+    });
+
+    // update local list (upsert)
+    setAttRows((prev) => {
+      const idx = prev.findIndex((x) => x.day === row.day);
+      if (idx >= 0) {
+        const copy = prev.slice();
+        copy[idx] = row;
+        return copy;
+      }
+      return [...prev, row].sort((a, b) => a.day.localeCompare(b.day));
+    });
+
+    return row;
+  }
+
   async function saveAttendance(day: string, status: string, deduct: boolean) {
     if (!attEmpId) return;
     setErr(null);
     try {
-      const row = await apiFetch<AttendanceRow>("/hr/attendance", {
-        method: "POST",
-        body: JSON.stringify({
-          employee_id: attEmpId,
-          day,
-          status,
-          deduct,
-          note: null,
-        }),
-      });
-
-      // update local list (upsert)
-      setAttRows((prev) => {
-        const idx = prev.findIndex((x) => x.day === row.day);
-        if (idx >= 0) {
-          const copy = prev.slice();
-          copy[idx] = row;
-          return copy;
-        }
-        return [...prev, row].sort((a, b) => a.day.localeCompare(b.day));
-      });
+      await upsertAttendance(day, status, deduct);
 
       // Recalc salary row so main table updates immediately
       await recalcPayrollFor(attEmpId);
       await loadAll();
     } catch (e: any) {
       setErr(e?.message || String(e));
+    }
+  }
+
+  async function applyAttendanceRange() {
+    if (!attEmpId) return;
+    if (attPickStart == null) return;
+
+    const a = attPickStart;
+    const b = attPickEnd ?? attPickStart;
+    const startDay = Math.min(a, b);
+    const endDay = Math.max(a, b);
+
+    setAttBulkBusy(true);
+    setErr(null);
+    try {
+      for (let dayNo = startDay; dayNo <= endDay; dayNo++) {
+        const day = `${month}-${_pad2(dayNo)}`;
+        await upsertAttendance(day, attBulkStatus, attBulkStatus === "present" ? false : attBulkDeduct);
+      }
+
+      await recalcPayrollFor(attEmpId);
+      await loadAll();
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    } finally {
+      setAttBulkBusy(false);
     }
   }
 
@@ -1014,7 +1243,7 @@ export default function HrPayrollPage() {
   }
 
   return (
-    <div style={{ padding: 12, color: "#e6edf3", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial" }}>
+    <div style={{ padding: isMobile ? 8 : 12, color: "#e6edf3", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div style={{ fontWeight: 950, fontSize: 18 }}>🧑‍💼 HR Payroll</div>
@@ -1023,17 +1252,30 @@ export default function HrPayrollPage() {
         </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <input
-            value={month}
-            onChange={(e) => setMonth(e.target.value)}
-            placeholder="YYYY-MM"
-            style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", width: 110 }}
-          />
+          <div style={{ position: "relative", display: "inline-block" }}>
+            <MonthYearPicker value={month} onChange={setMonth} />
+
+
+            <div
+              style={{
+                position: "absolute",
+                right: 10,
+                top: "50%",
+                transform: "translateY(-50%)",
+                pointerEvents: "none",
+                opacity: 0.9,
+                fontWeight: 950,
+                fontSize: 12,
+              }}
+            >
+              ▾
+            </div>
+          </div>
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search employees…"
-            style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", width: 240 }}
+            style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", width: isMobile ? "100%" : 240, maxWidth: "100%" }}
           />
           <button onClick={() => setEmpOpen(true)} style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#1f6feb", color: "#e6edf3", fontWeight: 900 }}>
             + Employee
@@ -1049,7 +1291,7 @@ export default function HrPayrollPage() {
 
       {err && <div style={{ marginTop: 10, color: "#ff7b72" }}>{String(err)}</div>}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 10, marginTop: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(5, minmax(0, 1fr))", gap: 10, marginTop: 12 }}>
         <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0f1623", padding: 10 }}>
           <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 900 }}>Active employees</div>
           <div style={{ fontSize: 22, fontWeight: 950, marginTop: 4 }}>{stats.active}</div>
@@ -1078,8 +1320,77 @@ export default function HrPayrollPage() {
           {busy && <div style={{ opacity: 0.75, fontSize: 12, fontWeight: 900 }}>Loading…</div>}
         </div>
 
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1250 }}>
+        {isMobile ? (
+          <div style={{ padding: 10, display: "grid", gap: 10 }}>
+            {filteredEmployees.map((e) => {
+              const sal = salaryByEmpMonth.get(e.id);
+              const agg = loanAggByEmp.get(e.id) || { remaining: 0 };
+              const uById = usersByEmployeeId.get(e.id);
+              const uByEmail = e.email ? usersByEmail.get(normEmail(e.email)) : undefined;
+              const u = uById || (uByEmail && (!uByEmail.employee_id || uByEmail.employee_id === e.id) ? uByEmail : undefined);
+
+              return (
+                <div key={e.id} style={{ border: "1px solid #30363d", borderRadius: 16, background: "#0b0f17", padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <button
+                        onClick={() => openEditEmployee(e)}
+                        style={{ fontWeight: 950, background: "transparent", border: "none", padding: 0, color: "#58a6ff", cursor: "pointer", textAlign: "left" }}
+                        title="Edit employee"
+                      >
+                        {e.name}
+                      </button>
+                      <div style={{ opacity: 0.75, fontSize: 12, marginTop: 2 }}>
+                        {(e.department || "-")}{e.position ? ` • ${e.position}` : ""}{e.is_active === false ? " • Inactive" : ""}
+                      </div>
+                      <div style={{ opacity: 0.75, fontSize: 12 }}>{e.email ? e.email : "No email"}</div>
+                      {u ? (
+                        <div style={{ opacity: 0.75, fontSize: 12, marginTop: 2 }}>
+                          User: <b>{u.role.toUpperCase()}</b> • {u.email}
+                        </div>
+                      ) : (
+                        <div style={{ opacity: 0.6, fontSize: 12, marginTop: 2 }}>User: None</div>
+                      )}
+                    </div>
+
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontWeight: 950, fontSize: 16 }}>{fmtMoney(sal?.net)}</div>
+                      <div style={{ opacity: 0.75, fontSize: 12 }}>{sal?.status ? String(sal.status).toUpperCase() : "—"}</div>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                    <div style={{ opacity: 0.85, fontSize: 12 }}>Base: <b>{fmtMoney(e.base_salary)}</b></div>
+                    <div style={{ opacity: 0.85, fontSize: 12 }}>Default bonus: <b>{fmtMoney(e.default_bonus ?? 0)}</b></div>
+
+                    <div style={{ opacity: 0.85, fontSize: 12 }}>Extra bonus: <b>{fmtMoney(sal?.bonuses ?? 0)}</b></div>
+                    <div style={{ opacity: 0.85, fontSize: 12 }}>OT: <b>{sal?.overtime_hours ?? "-"} hrs</b> • {fmtMoney(sal?.overtime_pay)}</div>
+
+                    <div style={{ opacity: 0.85, fontSize: 12 }}>Deductions: <b>{fmtMoney(sal?.deductions ?? 0)}</b></div>
+                    <div style={{ opacity: 0.85, fontSize: 12 }}>Already paid: <b>{fmtMoney(sal?.already_paid ?? 0)}</b></div>
+
+                    <div style={{ opacity: 0.85, fontSize: 12 }}>Loan (month): <b>{fmtMoney(sal?.loan_deduction ?? 0)}</b></div>
+                    <div style={{ opacity: 0.85, fontSize: 12 }}>Loan remaining: <b>{fmtMoney(agg.remaining)}</b></div>
+                  </div>
+
+                  <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button onClick={() => openPayroll(e.id)} style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#1f6feb", color: "#e6edf3", fontWeight: 950, flex: "1 1 140px" }}>
+                      Salary
+                    </button>
+                    <button onClick={() => openAttendance(e.id)} style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3", fontWeight: 950, flex: "1 1 140px" }}>
+                      Attendance
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+
+            {filteredEmployees.length === 0 && <div style={{ padding: 12, opacity: 0.75 }}>No employees.</div>}
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1250 }}>
+
             <thead>
               <tr style={{ background: "#0b0f17" }}>
                 <th style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #30363d" }}>Employee</th>
@@ -1197,6 +1508,7 @@ export default function HrPayrollPage() {
             </tbody>
           </table>
         </div>
+      )}
 
         <div style={{ padding: 10, borderTop: "1px solid #30363d", fontSize: 12, opacity: 0.75 }}>
           Formula: <b>basic + default bonus + extra bonus + overtime − attendance deduction − manual deductions − already paid − loan(month)</b>. Hourly = basic / 30 / 8.
@@ -1292,7 +1604,7 @@ export default function HrPayrollPage() {
             </div>
 
             {/* Summary */}
-            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
+            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "repeat(2, minmax(0, 1fr))" : "repeat(4, minmax(0, 1fr))", gap: 10 }}>
               {(() => {
                 const sal = salaryByEmpMonth.get(scEmpId);
                 const agg = loanAggByEmp.get(scEmpId);
@@ -2092,17 +2404,153 @@ export default function HrPayrollPage() {
             {!attBusy && (
               <div style={{ marginTop: 12, border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 10 }}>
                 <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
-                  Mark days as <b>absent</b> to deduct salary ((base + default bonus)/30 per day). Leave/sick can be non-deduct if you uncheck Deduct.
+                  Any day that’s <b>not present</b> can deduct salary ((base + default bonus)/30 per day) unless you uncheck Deduct.
+                </div>
+
+                {/* Flight-style range picker */}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12, alignItems: "flex-start", width: "100%", maxWidth: "100%" }}>
+                  <div style={{ border: "1px solid #30363d", borderRadius: 14, padding: 10, background: "#0f1623", flex: "0 0 320px", maxWidth: "100%" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, marginBottom: 8, fontSize: 11, opacity: 0.8, textAlign: "center" }}>
+                      {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
+                        <div key={d}>{d}</div>
+                      ))}
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+                      {(() => {
+                        const pad = _firstDowMon(month);
+                        const dim = _daysInMonth(month);
+                        const cells: Array<number | null> = [];
+
+                        for (let i = 0; i < pad; i++) cells.push(null);
+                        for (let d = 1; d <= dim; d++) cells.push(d);
+                        while (cells.length % 7 !== 0) cells.push(null);
+
+                        const a = attPickStart;
+                        const b = attPickEnd ?? attPickStart;
+                        const r0 = a == null ? null : Math.min(a, b ?? a);
+                        const r1 = a == null ? null : Math.max(a, b ?? a);
+
+                        return cells.map((d, idx) => {
+                          if (!d) return <div key={`x-${idx}`} style={{ height: 34 }} />;
+
+                          const inRange = r0 != null && r1 != null && d >= r0 && d <= r1;
+                          const isEdge = (r0 != null && d === r0) || (r1 != null && d === r1);
+
+                          return (
+                            <button
+                              key={d}
+                              onClick={() => {
+                                if (attPickStart == null || (attPickStart != null && attPickEnd != null)) {
+                                  setAttPickStart(d);
+                                  setAttPickEnd(null);
+                                  return;
+                                }
+                                // start set, end not set
+                                if (d === attPickStart) {
+                                  setAttPickEnd(d);
+                                } else if (d < attPickStart) {
+                                  setAttPickEnd(attPickStart);
+                                  setAttPickStart(d);
+                                } else {
+                                  setAttPickEnd(d);
+                                }
+                              }}
+                              style={{
+                                height: 34,
+                                borderRadius: 10,
+                                border: isEdge ? "1px solid #1f6feb" : "1px solid #30363d",
+                                background: inRange ? "#1f6feb" : "#0b0f17",
+                                color: "#e6edf3",
+                                fontWeight: isEdge ? 950 : 800,
+                                cursor: "pointer",
+                              }}
+                              title={`${month}-${_pad2(d)}`}
+                            >
+                              {d}
+                            </button>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+
+                  <div style={{ border: "1px solid #30363d", borderRadius: 14, padding: 10, background: "#0f1623", display: "grid", gap: 10, alignContent: "start", flex: "1 1 420px", minWidth: 0, maxWidth: "100%", overflowX: "hidden" }}>
+                    <div style={{ fontSize: 12, opacity: 0.85 }}>
+                      Selected:{" "}
+                      {attPickStart == null
+                        ? "—"
+                        : (() => {
+                            const a = attPickStart;
+                            const b = attPickEnd ?? attPickStart;
+                            const s = Math.min(a, b);
+                            const e = Math.max(a, b);
+                            return `${month}-${_pad2(s)} → ${month}-${_pad2(e)}`;
+                          })()}
+                    </div>
+
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", minWidth: 0 }}>
+                      <select
+                        value={attBulkStatus}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setAttBulkStatus(v);
+                          setAttBulkDeduct(v === "present" ? false : true);
+                        }}
+                        style={{ padding: 8, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", flex: "1 1 220px", minWidth: 200, maxWidth: "100%" }}
+                      >
+                        <option value="present">present</option>
+                        <option value="absent">absent</option>
+                        <option value="leave">leave</option>
+                        <option value="sick">sick</option>
+                      </select>
+
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, opacity: attBulkStatus === "present" ? 0.5 : 1 }}>
+                        <input
+                          type="checkbox"
+                          checked={attBulkStatus === "present" ? false : attBulkDeduct}
+                          disabled={attBulkStatus === "present"}
+                          onChange={(e) => setAttBulkDeduct(e.target.checked)}
+                        />
+                        Deduct
+                      </label>
+
+                      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap", marginLeft: "auto" }}>
+                        <button
+                          onClick={() => {
+                            setAttPickStart(null);
+                            setAttPickEnd(null);
+                          }}
+                          style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", fontWeight: 900 }}
+                        >
+                          Clear
+                        </button>
+
+                        <button
+                          onClick={applyAttendanceRange}
+                          disabled={attBulkBusy || attPickStart == null}
+                          style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#1f6feb", color: "#e6edf3", fontWeight: 950, opacity: attBulkBusy || attPickStart == null ? 0.7 : 1 }}
+                        >
+                          {attBulkBusy ? "Applying…" : "Apply range"}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ fontSize: 12, opacity: 0.75 }}>
+                      Tip: click a start day then an end day (like flight dates). Apply once.
+                    </div>
+                  </div>
                 </div>
 
                 <div style={{ maxHeight: 360, overflow: "auto" }}>
+
                   {Array.from({ length: _daysInMonth(month) }).map((_, i) => {
                     const dayNo = i + 1;
                     const day = `${month}-${String(dayNo).padStart(2, "0")}`;
 
                     const row = attRows.find((x) => x.day === day);
                     const status = (row?.status || "present").toLowerCase();
-                    const deduct = row?.deduct ?? true;
+                    const deduct = status === "present" ? false : (row?.deduct ?? true);
 
                     return (
                       <div key={day} style={{ display: "grid", gridTemplateColumns: "120px 160px 140px 1fr", gap: 10, alignItems: "center", padding: "8px 6px", borderTop: "1px solid #121826" }}>
@@ -2110,7 +2558,11 @@ export default function HrPayrollPage() {
 
                         <select
                           value={status}
-                          onChange={(e) => saveAttendance(day, e.target.value, e.target.value === "absent" ? deduct : false)}
+                          onChange={(e) => {
+                            const next = e.target.value;
+                            const nextDeduct = next === "present" ? false : (status === "present" ? true : deduct);
+                            saveAttendance(day, next, nextDeduct);
+                          }}
                           style={{ padding: 8, borderRadius: 12, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3" }}
                         >
                           <option value="present">present</option>
@@ -2119,12 +2571,12 @@ export default function HrPayrollPage() {
                           <option value="sick">sick</option>
                         </select>
 
-                        <label style={{ display: "flex", alignItems: "center", gap: 8, opacity: status === "absent" ? 1 : 0.5 }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, opacity: status === "present" ? 0.5 : 1 }}>
                           <input
                             type="checkbox"
-                            checked={status === "absent" ? deduct : false}
-                            disabled={status !== "absent"}
-                            onChange={(e) => saveAttendance(day, "absent", e.target.checked)}
+                            checked={status === "present" ? false : deduct}
+                            disabled={status === "present"}
+                            onChange={(e) => saveAttendance(day, status, e.target.checked)}
                           />
                           Deduct
                         </label>

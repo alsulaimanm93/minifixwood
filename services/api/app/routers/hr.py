@@ -675,9 +675,12 @@ async def upsert_attendance(payload: AttendanceUpsert, db: AsyncSession = Depend
     existing = qs.scalar_one_or_none()
 
     now = _now()
+    st = (payload.status or "present").strip().lower()
+    ded = False if st == "present" else bool(payload.deduct)
+
     if existing:
-        existing.status = (payload.status or "present").strip().lower()
-        existing.deduct = bool(payload.deduct)
+        existing.status = st
+        existing.deduct = ded
         existing.note = payload.note
         existing.updated_at = now
         row = existing
@@ -686,8 +689,8 @@ async def upsert_attendance(payload: AttendanceUpsert, db: AsyncSession = Depend
             id=uuid.uuid4(),
             employee_id=eid,
             day=payload.day,
-            status=(payload.status or "present").strip().lower(),
-            deduct=bool(payload.deduct),
+            status=st,
+            deduct=ded,
             note=payload.note,
             created_at=now,
             updated_at=now,
