@@ -7,18 +7,31 @@
     "beforeDevCommand": "",
     "devUrl": "http://localhost:3000",
     "beforeBuildCommand": "",
-    "frontendDist": ""
+    "frontendDist": "https://app.minifixqtr.com"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
-      { "title": "WorkshopDesktop", "width": 1200, "height": 800 }
+      {
+        "title": "WorkshopDesktop",
+        "width": 1200,
+        "height": 800,
+        "url": "https://app.minifixqtr.com"
+      }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": null
+    }
   },
-
   "bundle": {
     "active": true,
-    "icon": ["icons/icon.png"]
+    "targets": [
+      "deb",
+      "appimage",
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.png"
+    ]
   }
 }
