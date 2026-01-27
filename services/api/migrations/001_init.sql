@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
   email text NOT NULL UNIQUE,
   name text NOT NULL,
   password_hash text NOT NULL,
-  role text NOT NULL CHECK (role IN ('admin','manager','designer','worker','viewer')),
+  role text NOT NULL CHECK (role IN ('admin','manager','designer','worker','viewer','hr','site_supervisor')),
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()

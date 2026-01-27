@@ -16,14 +16,19 @@ from ..schemas import (
     FileCreate, FileRenameRequest, FileOut, InitiateUploadRequest, InitiateUploadResponse,
     CompleteUploadRequest, FileMetadataOut, PresignDownloadResponse, FileVersionOut,
 )
-from ..deps import get_current_user
+from ..deps import get_current_user, require_roles
 from ..s3 import ensure_bucket, presign_put, presign_get
 from . import _audit
 
-router = APIRouter(prefix="/files", tags=["files"])
+router = APIRouter(
+    prefix="/files",
+    tags=["files"],
+    dependencies=[Depends(require_roles("admin", "designer", "site_supervisor"))],
+)
 @router.get("", response_model=list[FileOut])
 async def list_files(
     project_id: UUID | None = None,
+    include_hidden: bool = False,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -42,6 +47,8 @@ async def list_files(
         """), {"pid": str(project_id)})
 
     rows = result.mappings().all()
+    if not include_hidden:
+        rows = [r for r in rows if (r.get("name") or "").lower() != ".keep"]
     return [FileOut(**r) for r in rows]
 @router.get("/{file_id}", response_model=FileOut)
 async def get_file(file_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
@@ -78,7 +85,7 @@ async def _ensure_not_locked(file_id: UUID, db: AsyncSession, user: User):
         raise HTTPException(409, detail={"message": "Locked", "locked_by": row["locked_by"], "expires_at": row.get("expires_at")})
 
 
-@router.patch("/{file_id}", response_model=FileOut)
+@router.patch("/{file_id}", response_model=FileOut, dependencies=[Depends(require_roles("admin", "designer"))])
 async def rename_file(file_id: UUID, req: FileRenameRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     # block rename if locked by someone else
     await _ensure_not_locked(file_id, db, user)
@@ -138,7 +145,7 @@ async def rename_file(file_id: UUID, req: FileRenameRequest, db: AsyncSession = 
     return FileOut(**row)
 
 
-@router.delete("/{file_id}")
+@router.delete("/{file_id}", dependencies=[Depends(require_roles("admin", "designer"))])
 async def delete_file(file_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     # block delete if locked by someone else
     await _ensure_not_locked(file_id, db, user)
@@ -175,7 +182,7 @@ def safe_name(name: str) -> str:
     name = re.sub(r"[^a-zA-Z0-9._ -]+", "_", name)
     return name[:200] if len(name) > 200 else name
 
-@router.post("", response_model=FileOut)
+@router.post("", response_model=FileOut, dependencies=[Depends(require_roles("admin", "designer"))])
 async def create_file(req: FileCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     result = await db.execute(text("""
         INSERT INTO files (project_id, kind, name, mime, size_bytes, created_by, created_at, updated_at)
@@ -209,7 +216,7 @@ async def file_metadata(file_id: UUID, db: AsyncSession = Depends(get_db), user:
         raise HTTPException(404, "File not found")
     return FileMetadataOut(**row)
 
-@router.post("/{file_id}/versions/initiate-upload", response_model=InitiateUploadResponse)
+@router.post("/{file_id}/versions/initiate-upload", response_model=InitiateUploadResponse, dependencies=[Depends(require_roles("admin", "designer"))])
 async def initiate_upload(file_id: UUID, req: InitiateUploadRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     # Ensure bucket exists (dev)
     ensure_bucket()
@@ -223,7 +230,7 @@ async def initiate_upload(file_id: UUID, req: InitiateUploadRequest, db: AsyncSe
     await _audit.write(db, user.id, "file.upload.initiate", "file", file_id, meta={"object_key": object_key, "size": req.size_bytes})
     return InitiateUploadResponse(object_key=object_key, url=url, headers=headers)
 
-@router.post("/{file_id}/versions/complete-upload", response_model=FileMetadataOut)
+@router.post("/{file_id}/versions/complete-upload", response_model=FileMetadataOut, dependencies=[Depends(require_roles("admin", "designer"))])
 async def complete_upload(file_id: UUID, req: CompleteUploadRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     # Determine next version_no
     q = await db.execute(text("""

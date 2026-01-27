@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 const UPSTREAM = process.env.API_UPSTREAM || "http://api:8000";
 
@@ -24,10 +24,24 @@ async function proxy(req: NextRequest, ctx: { params: { path: string[] } }) {
   respHeaders.delete("content-encoding");
   respHeaders.delete("content-length");
 
-  return new Response(upstream.body, {
+  // IMPORTANT: Set-Cookie needs special forwarding, otherwise cookies may not stick.
+  respHeaders.delete("set-cookie");
+
+  const resp = new NextResponse(upstream.body, {
     status: upstream.status,
     headers: respHeaders,
   });
+
+  const anyHeaders: any = upstream.headers as any;
+  const setCookies: string[] =
+    (typeof anyHeaders.getSetCookie === "function" ? anyHeaders.getSetCookie() : null) ||
+    (upstream.headers.get("set-cookie") ? [String(upstream.headers.get("set-cookie"))] : []);
+
+  for (const sc of setCookies) {
+    if (sc) resp.headers.append("set-cookie", sc);
+  }
+
+  return resp;
 }
 
 export async function GET(req: NextRequest, ctx: any) { return proxy(req, ctx); }

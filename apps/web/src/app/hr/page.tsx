@@ -12,6 +12,7 @@ type Employee = {
   phone?: string | null;
   email?: string | null;
   hire_date?: string | null;
+  end_date?: string | null;
   is_active?: boolean | null;
   base_salary?: number | null;
   default_bonus?: number | null;
@@ -190,8 +191,15 @@ function MonthYearPicker({
     { mm: "12", label: "Dec" },
   ];
 
-  return (
-    <div style={{ position: "relative", display: "inline-block" }}>
+    return (
+      <div
+        style={{
+          position: "relative",
+          display: "block",
+          width: "100%",
+          minWidth: 0,
+        }}
+      >
       <button
         onClick={() => {
           setYear(parseYear(value));
@@ -295,6 +303,17 @@ function MonthYearPicker({
 
 function normEmail(v: any) {
   return String(v || "").trim().toLowerCase();
+}
+
+const LABEL_STYLE: React.CSSProperties = { fontSize: 12, opacity: 0.75, fontWeight: 900 };
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
+      <div style={LABEL_STYLE}>{label}</div>
+      {children}
+    </div>
+  );
 }
 
 
@@ -420,6 +439,7 @@ export default function HrPayrollPage() {
     position: "",
     phone: "",
     email: "",
+    hire_date: "",
     base_salary: "",
     default_bonus: "",
     is_active: true,
@@ -436,6 +456,7 @@ export default function HrPayrollPage() {
     phone: "",
     email: "",
     hire_date: "",
+    end_date: "",
     base_salary: "",
     default_bonus: "",
     is_active: true,
@@ -474,6 +495,18 @@ export default function HrPayrollPage() {
   const [attBulkStatus, setAttBulkStatus] = useState<string>("leave");
   const [attBulkDeduct, setAttBulkDeduct] = useState<boolean>(true);
   const [attBulkBusy, setAttBulkBusy] = useState(false);
+
+  // Attendance safety: disable/skip days outside employment dates
+  const attEmp = attEmpId ? employees.find((x) => x.id === attEmpId) : null;
+  const attHire = attEmp?.hire_date ? String(attEmp.hire_date).slice(0, 10) : null;
+  const attEnd = attEmp?.end_date ? String(attEmp.end_date).slice(0, 10) : null;
+
+  function attInEmployment(day: string) {
+    const d = String(day || "").slice(0, 10);
+    if (attHire && d < attHire) return false;
+    if (attEnd && d > attEnd) return false;
+    return true;
+  }
 
   // Payments modal
   const [paymOpen, setPaymOpen] = useState(false);
@@ -560,31 +593,61 @@ export default function HrPayrollPage() {
   }, [loans]);
 
   const filteredEmployees = useMemo(() => {
+    const { start, end } = _monthRange(month);
+
+    function parseYMD(s: string) {
+      const t = String(s || "").slice(0, 10);
+      const [yy, mm, dd] = t.split("-").map((x) => Number(x));
+      if (!yy || !mm || !dd) return null;
+      return new Date(Date.UTC(yy, mm - 1, dd));
+    }
+
+    function isInMonth(e: Employee) {
+      const hs = e.hire_date ? parseYMD(e.hire_date) : null;
+      const ed = e.end_date ? parseYMD(e.end_date) : null;
+
+      // end_date is inclusive → convert to exclusive end by adding 1 day
+      const endExclusive = ed ? new Date(ed.getTime() + 24 * 60 * 60 * 1000) : null;
+
+      // show if employment overlaps [start, end)
+      if (hs && hs >= end) return false;
+      if (endExclusive && endExclusive <= start) return false;
+      return true;
+    }
+
+    const base = (employees || []).filter(isInMonth);
+
     const qq = q.trim().toLowerCase();
-    if (!qq) return employees;
-    return employees.filter((e) => {
+    if (!qq) return base;
+
+    return base.filter((e) => {
       const hay = `${e.name || ""} ${e.department || ""} ${e.position || ""} ${e.phone || ""} ${e.email || ""}`.toLowerCase();
       return hay.includes(qq);
     });
-  }, [employees, q]);
+  }, [employees, q, month]);
 
   const stats = useMemo(() => {
     const active = employees.filter((x) => x.is_active !== false).length;
     let payrollNet = 0;
     let otTotal = 0;
     let loanRemain = 0;
+    let totalUnpaid = 0;
 
     for (const e of employees) {
       const sal = salaryByEmpMonth.get(e.id);
-      if (sal?.net != null) payrollNet += Number(sal.net || 0);
+      if (sal?.net != null) {
+        const n = Number(sal.net || 0);
+        payrollNet += n;
+        if (n > 0) totalUnpaid += n;
+      }
       if (sal?.overtime_pay != null) otTotal += Number(sal.overtime_pay || 0);
 
       const agg = loanAggByEmp.get(e.id);
       if (agg) loanRemain += agg.remaining;
     }
 
-    return { active, payrollNet, otTotal, loanRemain, usersCount: users.length };
-  }, [employees, salaryByEmpMonth, loanAggByEmp, users]);
+    return { active, payrollNet, otTotal, loanRemain, totalUnpaid };
+  }, [employees, salaryByEmpMonth, loanAggByEmp]);
   function calcUnpaidForPayments(empId: string, rows: PaymentRow[]) {
     const sal = salaryByEmpMonth.get(empId);
     if (!sal) return null;
@@ -727,13 +790,14 @@ export default function HrPayrollPage() {
           position: String(empDraft?.position || "").trim() || null,
           phone: String(empDraft?.phone || "").trim() || null,
           email: String(empDraft?.email || "").trim() || null,
+          hire_date: String(empDraft?.hire_date || "").trim() || null,
           base_salary: empDraft?.base_salary ? Number(empDraft.base_salary) : null,
           default_bonus: empDraft?.default_bonus ? Number(empDraft.default_bonus) : null,
           is_active: empDraft?.is_active !== false,
         }),
       });
       setEmpOpen(false);
-      setEmpDraft({ name: "", department: "", position: "", phone: "", email: "", base_salary: "", default_bonus: "", is_active: true });
+      setEmpDraft({ name: "", department: "", position: "", phone: "", email: "", hire_date: "", base_salary: "", default_bonus: "", is_active: true });
       await loadAll();
     } catch (e: any) {
       setErr(e?.message || String(e));
@@ -751,6 +815,7 @@ export default function HrPayrollPage() {
       phone: String(emp.phone || ""),
       email: String(emp.email || ""),
       hire_date: emp.hire_date ? String(emp.hire_date).slice(0, 10) : "",
+      end_date: emp.end_date ? String(emp.end_date).slice(0, 10) : "",
       base_salary: emp.base_salary == null ? "" : String(emp.base_salary),
       default_bonus: emp.default_bonus == null ? "" : String(emp.default_bonus),
       is_active: emp.is_active !== false,
@@ -779,6 +844,7 @@ export default function HrPayrollPage() {
           phone: String(empEditDraft?.phone || "").trim() || null,
           email: String(empEditDraft?.email || "").trim() || null,
           hire_date: String(empEditDraft?.hire_date || "").trim() || null,
+          end_date: String(empEditDraft?.end_date || "").trim() || null,
           base_salary: String(empEditDraft?.base_salary || "").trim() === "" ? null : Number(empEditDraft.base_salary),
           default_bonus: String(empEditDraft?.default_bonus || "").trim() === "" ? null : Number(empEditDraft.default_bonus),
           is_active: empEditDraft?.is_active !== false,
@@ -854,6 +920,152 @@ export default function HrPayrollPage() {
     return String(n).padStart(2, "0");
   }
 
+  function DatePicker({
+    value,
+    onChange,
+    placeholder = "YYYY-MM-DD",
+    width = "100%",
+  }: {
+    value: string;
+    onChange: (v: string) => void;
+    placeholder?: string;
+    width?: number | string;
+  }) {
+    const [open, setOpen] = useState(false);
+
+    // When used inside CSS grid cells, inline-block can shrink and cause weird layout.
+    // If width is set to 100%, we force the wrapper to be block-level and full width.
+    const _fullWidth = width === "100%";
+
+    const parseYmFromValue = (v: string) => {
+      const s = String(v || "");
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s.slice(0, 7);
+      return currentMonthYYYYMM();
+    };
+
+    const [ym, setYm] = useState<string>(parseYmFromValue(value));
+
+    useEffect(() => {
+      if (open) setYm(parseYmFromValue(value));
+    }, [open, value]);
+
+    const selectedDay = /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? Number(String(value).slice(8, 10)) : null;
+
+    const pad = _firstDowMon(ym);
+    const dim = _daysInMonth(ym);
+
+    const cells: Array<number | null> = [];
+    for (let i = 0; i < pad; i++) cells.push(null);
+    for (let d = 1; d <= dim; d++) cells.push(d);
+    while (cells.length % 7 !== 0) cells.push(null);
+
+    return (
+      <div style={{ position: "relative", display: _fullWidth ? "block" : "inline-block", width: _fullWidth ? "100%" : undefined }}>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          style={{
+            padding: "8px 34px 8px 10px",
+            borderRadius: 12,
+            border: "1px solid #30363d",
+            background: "#0b0f17",
+            color: "#e6edf3",
+            width,
+            fontWeight: 900,
+            cursor: "pointer",
+            textAlign: "left",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            boxSizing: "border-box",
+          }}
+          title="Pick date"
+        >
+          {value || placeholder}
+          <span style={{ float: "right", opacity: 0.9 }}>▾</span>
+        </button>
+
+        {open && (
+          <>
+            <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+
+            <div
+              style={{
+                position: "absolute",
+                top: "calc(100% + 8px)",
+                left: 0,
+                zIndex: 50,
+                width: 320,
+                maxWidth: "90vw",
+                border: "1px solid #30363d",
+                borderRadius: 14,
+                background: "#0f1623",
+                boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
+                padding: 10,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+                <button
+                  onClick={() => setYm(_ymAdd(ym, -1))}
+                  style={{ padding: "6px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", fontWeight: 950, cursor: "pointer" }}
+                  aria-label="Previous month"
+                >
+                  ←
+                </button>
+
+                <div style={{ fontWeight: 950, opacity: 0.95 }}>{ym}</div>
+
+                <button
+                  onClick={() => setYm(_ymAdd(ym, +1))}
+                  style={{ padding: "6px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", fontWeight: 950, cursor: "pointer" }}
+                  aria-label="Next month"
+                >
+                  →
+                </button>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, marginBottom: 8, fontSize: 11, opacity: 0.8, textAlign: "center" }}>
+                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
+                  <div key={d}>{d}</div>
+                ))}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+                {cells.map((d, idx) => {
+                  if (!d) return <div key={`x-${idx}`} style={{ height: 34 }} />;
+
+                  const active = d === selectedDay && String(value || "").slice(0, 7) === ym;
+
+                  return (
+                    <button
+                      key={`${ym}-${d}`}
+                      onClick={() => {
+                        onChange(`${ym}-${_pad2(d)}`);
+                        setOpen(false);
+                      }}
+                      style={{
+                        height: 34,
+                        borderRadius: 10,
+                        border: active ? "1px solid #1f6feb" : "1px solid #30363d",
+                        background: active ? "#1f6feb" : "#0b0f17",
+                        color: "#e6edf3",
+                        fontWeight: active ? 950 : 800,
+                        cursor: "pointer",
+                      }}
+                      title={`${ym}-${_pad2(d)}`}
+                    >
+                      {d}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+
   async function upsertAttendance(day: string, status: string, deduct: boolean) {
     if (!attEmpId) return null;
 
@@ -913,6 +1125,7 @@ export default function HrPayrollPage() {
     try {
       for (let dayNo = startDay; dayNo <= endDay; dayNo++) {
         const day = `${month}-${_pad2(dayNo)}`;
+        if (!attInEmployment(day)) continue;
         await upsertAttendance(day, attBulkStatus, attBulkStatus === "present" ? false : attBulkDeduct);
       }
 
@@ -1309,8 +1522,8 @@ export default function HrPayrollPage() {
           <div style={{ fontSize: 22, fontWeight: 950, marginTop: 4 }}>{fmtMoney(stats.loanRemain)}</div>
         </div>
         <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0f1623", padding: 10 }}>
-          <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 900 }}>Users created</div>
-          <div style={{ fontSize: 22, fontWeight: 950, marginTop: 4 }}>{stats.usersCount}</div>
+          <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 900 }}>Total unpaid ({month})</div>
+          <div style={{ fontSize: 22, fontWeight: 950, marginTop: 4 }}>{fmtMoney(stats.totalUnpaid)}</div>
         </div>
       </div>
 
@@ -2066,7 +2279,7 @@ export default function HrPayrollPage() {
             </div>
 
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", gap: 10 }}>
                 <label style={{ display: "grid", gap: 6 }}>
                   <div style={{ fontSize: 12, opacity: 0.8, fontWeight: 900 }}>Extra bonus (this month)</div>
                   <input value={payBonuses} onChange={(e) => setPayBonuses(e.target.value)} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
@@ -2114,31 +2327,56 @@ export default function HrPayrollPage() {
       {/* Add Employee modal */}
       {empOpen && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "grid", placeItems: "center", padding: 14, zIndex: 70 }}>
-          <div style={{ width: "min(860px, 96vw)", border: "1px solid #30363d", borderRadius: 16, background: "#0f1623", padding: 14 }}>
+          <div style={{ width: "min(980px, 96vw)", border: "1px solid #30363d", borderRadius: 16, background: "#0f1623", padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ fontWeight: 950 }}>Add Employee</div>
               <button onClick={() => setEmpOpen(false)} style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}>Close</button>
             </div>
 
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <input value={empDraft.name} onChange={(e) => setEmpDraft((p: any) => ({ ...p, name: e.target.value }))} placeholder="Full name" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
-                <input value={empDraft.department} onChange={(e) => setEmpDraft((p: any) => ({ ...p, department: e.target.value }))} placeholder="Department" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+                <Field label="Full name">
+                  <input value={empDraft.name} onChange={(e) => setEmpDraft((p: any) => ({ ...p, name: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
+                <Field label="Department">
+                  <input value={empDraft.department} onChange={(e) => setEmpDraft((p: any) => ({ ...p, department: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                <input value={empDraft.position} onChange={(e) => setEmpDraft((p: any) => ({ ...p, position: e.target.value }))} placeholder="Position" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
-                <input value={empDraft.phone} onChange={(e) => setEmpDraft((p: any) => ({ ...p, phone: e.target.value }))} placeholder="Phone" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
-                <input value={empDraft.email} onChange={(e) => setEmpDraft((p: any) => ({ ...p, email: e.target.value }))} placeholder="Email (optional)" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+                <Field label="Position">
+                  <input value={empDraft.position} onChange={(e) => setEmpDraft((p: any) => ({ ...p, position: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
+                <Field label="Phone">
+                  <input value={empDraft.phone} onChange={(e) => setEmpDraft((p: any) => ({ ...p, phone: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
+                <Field label="Email (optional)">
+                  <input value={empDraft.email} onChange={(e) => setEmpDraft((p: any) => ({ ...p, email: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                <input value={empDraft.base_salary} onChange={(e) => setEmpDraft((p: any) => ({ ...p, base_salary: e.target.value }))} placeholder="Base salary" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
-                <input value={empDraft.default_bonus} onChange={(e) => setEmpDraft((p: any) => ({ ...p, default_bonus: e.target.value }))} placeholder="Default bonus (monthly)" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
-                <select value={empDraft.is_active === false ? "no" : "yes"} onChange={(e) => setEmpDraft((p: any) => ({ ...p, is_active: e.target.value !== "no" }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}>
-                  <option value="yes">Active</option>
-                  <option value="no">Inactive</option>
-                </select>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(4, minmax(0, 1fr))", gap: 10 }}>
+                <Field label="Start date">
+                  <DatePicker
+                    value={empDraft.hire_date}
+                    onChange={(v) => setEmpDraft((p: any) => ({ ...p, hire_date: v }))}
+                  />
+                </Field>
+
+                <Field label="Base salary">
+                  <input value={empDraft.base_salary} onChange={(e) => setEmpDraft((p: any) => ({ ...p, base_salary: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
+
+                <Field label="Default bonus (monthly)">
+                  <input value={empDraft.default_bonus} onChange={(e) => setEmpDraft((p: any) => ({ ...p, default_bonus: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
+
+                <Field label="Status">
+                  <select value={empDraft.is_active === false ? "no" : "yes"} onChange={(e) => setEmpDraft((p: any) => ({ ...p, is_active: e.target.value !== "no" }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}>
+                    <option value="yes">Active</option>
+                    <option value="no">Inactive</option>
+                  </select>
+                </Field>
               </div>
             </div>
 
@@ -2157,7 +2395,7 @@ export default function HrPayrollPage() {
       {/* Edit Employee modal */}
       {empEditOpen && empEditId && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "grid", placeItems: "center", padding: 14, zIndex: 72 }}>
-          <div style={{ width: "min(860px, 96vw)", border: "1px solid #30363d", borderRadius: 16, background: "#0f1623", padding: 14 }}>
+          <div style={{ width: "min(980px, 96vw)", border: "1px solid #30363d", borderRadius: 16, background: "#0f1623", padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <div style={{ fontWeight: 950 }}>
                 Edit Employee • {employees.find((x) => x.id === empEditId)?.name || "Employee"}
@@ -2171,25 +2409,69 @@ export default function HrPayrollPage() {
             </div>
 
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <input value={empEditDraft.name} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, name: e.target.value }))} placeholder="Full name" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
-                <input value={empEditDraft.department} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, department: e.target.value }))} placeholder="Department" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+                <Field label="Full name">
+                  <input value={empEditDraft.name} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, name: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
+                <Field label="Department">
+                  <input value={empEditDraft.department} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, department: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                <input value={empEditDraft.position} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, position: e.target.value }))} placeholder="Position" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
-                <input value={empEditDraft.phone} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, phone: e.target.value }))} placeholder="Phone" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
-                <input value={empEditDraft.email} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, email: e.target.value }))} placeholder="Email (optional)" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+                <Field label="Position">
+                  <input value={empEditDraft.position} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, position: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
+                <Field label="Phone">
+                  <input value={empEditDraft.phone} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, phone: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
+                <Field label="Email (optional)">
+                  <input value={empEditDraft.email} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, email: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 180px", gap: 10 }}>
-                <input value={empEditDraft.base_salary} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, base_salary: e.target.value }))} placeholder="Base salary" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
-                <input value={empEditDraft.default_bonus} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, default_bonus: e.target.value }))} placeholder="Default bonus" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
-                <input value={empEditDraft.hire_date} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, hire_date: e.target.value }))} type="date" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
-                <select value={empEditDraft.is_active === false ? "no" : "yes"} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, is_active: e.target.value !== "no" }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}>
-                  <option value="yes">Active</option>
-                  <option value="no">Inactive</option>
-                </select>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(5, minmax(0, 1fr))", gap: 10 }}>
+                <Field label="Base salary">
+                  <input value={empEditDraft.base_salary} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, base_salary: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
+
+                <Field label="Default bonus">
+                  <input value={empEditDraft.default_bonus} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, default_bonus: e.target.value }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
+                </Field>
+
+                <Field label="Start date">
+                  <DatePicker
+                    value={empEditDraft.hire_date}
+                    onChange={(v) => setEmpEditDraft((p: any) => ({ ...p, hire_date: v }))}
+                  />
+                </Field>
+
+                <Field label="End date">
+                  <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
+                    <DatePicker
+                      value={empEditDraft.end_date}
+                      onChange={(v) => setEmpEditDraft((p: any) => ({ ...p, end_date: v }))}
+                    />
+                    {!!empEditDraft.end_date && (
+                      <button
+                        onClick={() => setEmpEditDraft((p: any) => ({ ...p, end_date: "" }))}
+                        style={{ justifySelf: "end", padding: 0, border: "none", background: "transparent", color: "#8b949e", fontWeight: 900, cursor: "pointer" }}
+                        title="Clear end date"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                </Field>
+
+
+
+                <Field label="Status">
+                  <select value={empEditDraft.is_active === false ? "no" : "yes"} onChange={(e) => setEmpEditDraft((p: any) => ({ ...p, is_active: e.target.value !== "no" }))} style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}>
+                    <option value="yes">Active</option>
+                    <option value="no">Inactive</option>
+                  </select>
+                </Field>
               </div>
             </div>
             {/* User management */}
@@ -2551,6 +2833,7 @@ export default function HrPayrollPage() {
                     const row = attRows.find((x) => x.day === day);
                     const status = (row?.status || "present").toLowerCase();
                     const deduct = status === "present" ? false : (row?.deduct ?? true);
+                    const inEmp = attInEmployment(day);
 
                     return (
                       <div key={day} style={{ display: "grid", gridTemplateColumns: "120px 160px 140px 1fr", gap: 10, alignItems: "center", padding: "8px 6px", borderTop: "1px solid #121826" }}>
@@ -2558,7 +2841,9 @@ export default function HrPayrollPage() {
 
                         <select
                           value={status}
+                          disabled={!inEmp}
                           onChange={(e) => {
+                            if (!inEmp) return;
                             const next = e.target.value;
                             const nextDeduct = next === "present" ? false : (status === "present" ? true : deduct);
                             saveAttendance(day, next, nextDeduct);
@@ -2575,8 +2860,11 @@ export default function HrPayrollPage() {
                           <input
                             type="checkbox"
                             checked={status === "present" ? false : deduct}
-                            disabled={status === "present"}
-                            onChange={(e) => saveAttendance(day, status, e.target.checked)}
+                            disabled={status === "present" || !inEmp}
+                            onChange={(e) => {
+                              if (!inEmp) return;
+                              saveAttendance(day, status, e.target.checked);
+                            }}
                           />
                           Deduct
                         </label>

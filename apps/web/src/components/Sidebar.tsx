@@ -3,6 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { apiFetch } from "@/lib/api";
 import { IconBoxes, IconCog, IconFinance, IconHome, IconProjects, IconReports, IconHR } from "./icons";
 
 type Item = {
@@ -21,44 +22,59 @@ function isActive(pathname: string, href: string) {
 export default function Sidebar() {
   const pathname = usePathname() || "/";
 
-  const role = React.useMemo(() => {
-    if (typeof window === "undefined") return "";
-    const token =
-      localStorage.getItem("token") ||
-      localStorage.getItem("access_token") ||
-      localStorage.getItem("jwt") ||
-      "";
-    if (!token) return "";
+  const [role, setRole] = React.useState<string>("");
+  const [loaded, setLoaded] = React.useState(false);
 
-    const parts = token.split(".");
-    if (parts.length < 2) return "";
+  React.useEffect(() => {
+    let alive = true;
 
-    try {
-      const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-      const padded = b64 + "===".slice((b64.length + 3) % 4);
-      const payload = JSON.parse(atob(padded));
-      return String(payload?.role || payload?.user?.role || "").toLowerCase();
-    } catch {
-      return "";
-    }
+    (async () => {
+      try {
+        const me = await apiFetch<{ role: string }>("/auth/me");
+        if (!alive) return;
+        setRole(String(me?.role || "").toLowerCase());
+      } catch {
+        if (!alive) return;
+        setRole("");
+      } finally {
+        if (!alive) return;
+        setLoaded(true);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  // If you have no token in dev, allow it to show. If role exists, restrict to admin/hr.
-  const canHR = !role || role === "admin" || role === "hr";
+  const isAdmin = loaded && role === "admin";
+  const isDesigner = loaded && role === "designer";
+  const isSupervisor = loaded && role === "site_supervisor";
+  const isHR = loaded && role === "hr";
 
-    const items: Item[] = [
-    { key: "dashboard", href: "/", label: "Dashboard", icon: <IconHome /> },
-    { key: "projects", href: "/projects", label: "Projects", icon: <IconProjects /> },
-    { key: "inventory", href: "/inventory", label: "Inventory", icon: <IconBoxes /> },
-    { key: "finance", href: "/finance", label: "Finance", icon: <IconFinance />, comingSoon: true },
+  const canInventory = isAdmin || isDesigner;
+  const canHR = isAdmin || isHR;
+  const canReports = !isSupervisor; // supervisor sees projects only
+  const canSettings = isAdmin || isHR;
 
-    ...(canHR ? [{ key: "hr", href: "/hr", label: "HR", icon: <IconHR /> }] : []),
+  const items: Item[] = isSupervisor
+    ? [{ key: "projects", href: "/projects", label: "Projects", icon: <IconProjects /> }]
+    : [
+        { key: "dashboard", href: "/", label: "Dashboard", icon: <IconHome /> },
+        { key: "projects", href: "/projects", label: "Projects", icon: <IconProjects /> },
 
-    { key: "reports", href: "/reports", label: "Reports", icon: <IconReports /> },
-    ];
+        ...(canInventory ? [{ key: "inventory", href: "/inventory", label: "Inventory", icon: <IconBoxes /> }] : []),
 
+        ...(isAdmin ? [{ key: "finance", href: "/finance", label: "Finance", icon: <IconFinance />, comingSoon: true }] : []),
 
-  const bottom: Item[] = [{ key: "settings", href: "/settings", label: "Settings", icon: <IconCog />, comingSoon: true }];
+        ...(canHR ? [{ key: "hr", href: "/hr", label: "HR", icon: <IconHR /> }] : []),
+
+        ...(canReports ? [{ key: "reports", href: "/reports", label: "Reports", icon: <IconReports /> }] : []),
+      ];
+
+  const bottom: Item[] = canSettings
+    ? [{ key: "settings", href: "/settings", label: "Settings", icon: <IconCog /> }]
+    : [];
 
   const baseBg = "#0f1623";
   const border = "1px solid #30363d";

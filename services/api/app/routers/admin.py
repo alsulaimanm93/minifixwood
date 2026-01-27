@@ -17,7 +17,7 @@ from ..core.security import hash_password
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-ALLOWED_ROLES = ("admin", "hr", "manager", "employee", "designer", "worker", "viewer")
+ALLOWED_ROLES = ("admin", "hr", "manager", "employee", "designer", "site_supervisor", "worker", "viewer")
 
 def _now():
     return datetime.now(timezone.utc)
@@ -48,6 +48,12 @@ class UserCreate(BaseModel):
     is_active: bool = True
     # Frontend always sends email (or asks user for it)
     email: Optional[str] = None
+
+class UserCreateSimple(BaseModel):
+    email: str
+    name: str
+    role: str = "site_supervisor"
+    is_active: bool = True
 
 class UserUpdate(BaseModel):
     employee_id: Optional[str] = None
@@ -193,6 +199,61 @@ async def create_user(payload: UserCreate, db: AsyncSession = Depends(get_db)):
         must_change_password=bool(u.must_change_password),
         temp_password=temp,
     )
+
+
+@router.post("/users/simple", response_model=UserCreateResult, dependencies=[Depends(require_roles("admin", "hr"))])
+async def create_user_simple(payload: UserCreateSimple, db: AsyncSession = Depends(get_db)):
+    role = payload.role.strip().lower()
+    if role not in ALLOWED_ROLES:
+        raise HTTPException(status_code=400, detail=f"Invalid role (allowed: {', '.join(ALLOWED_ROLES)})")
+
+    email = payload.email.strip().lower()
+    name = payload.name.strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    q = await db.execute(select(User).where(User.email == email))
+    if q.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Email already exists")
+
+    temp = _gen_temp_password()
+    now = _now()
+
+    u = User(
+        id=uuid.uuid4(),
+        email=email,
+        name=name,
+        password_hash=hash_password(temp),
+        role=role,
+        employee_id=None,
+        must_change_password=True,
+        is_active=payload.is_active,
+        created_at=now,
+        updated_at=now,
+    )
+
+    db.add(u)
+    try:
+        await db.commit()
+    except IntegrityError as e:
+        await db.rollback()
+        sqlstate, constraint, msg = _pg_info(e)
+        raise HTTPException(status_code=400, detail=f"Could not create user: {msg}")
+
+    await db.refresh(u)
+    return UserCreateResult(
+        id=str(u.id),
+        email=u.email,
+        name=u.name,
+        role=u.role,
+        is_active=bool(u.is_active),
+        employee_id=None,
+        must_change_password=bool(u.must_change_password),
+        temp_password=temp,
+    )
+
 
 @router.patch("/users/{user_id}", response_model=UserOut, dependencies=[Depends(require_roles("admin", "hr"))])
 async def update_user(user_id: str, payload: UserUpdate, db: AsyncSession = Depends(get_db)):

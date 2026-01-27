@@ -54,3 +54,12 @@ debug-pack.tar.gz
 thumbs-debug.tar.gz
 hr-online-pack.tgz
 hr-online-pack/
+
+# local backups / import logs
+backup_workshop_*.sql
+failed_*.tsv
+import_failed*.csv
+
+# temp image backups
+*.bak
+*.bad

@@ -6,7 +6,7 @@ from sqlalchemy import text
 from uuid import UUID
 
 from ..db import get_db
-from ..deps import get_current_user
+from ..deps import get_current_user, require_roles
 from ..models import User
 from ..schemas import (
     SupplierCreate, SupplierUpdate, SupplierOut,
@@ -17,7 +17,11 @@ from ..schemas import (
     ProjectAvailabilityRow,
 )
 
-router = APIRouter(prefix="/inventory", tags=["inventory"])
+router = APIRouter(
+    prefix="/inventory",
+    tags=["inventory"],
+    dependencies=[Depends(require_roles("admin", "designer"))],
+)
 
 
 # -----------------------------

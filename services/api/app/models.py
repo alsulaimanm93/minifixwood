@@ -119,6 +119,7 @@ class Employee(Base):
     email: Mapped[str | None] = mapped_column(String, nullable=True)
 
     hire_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     base_salary: Mapped[float | None] = mapped_column(Numeric, nullable=True)

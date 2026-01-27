@@ -18,11 +18,15 @@ from datetime import date, timedelta
 import json
 
 from ..schemas import ProjectCreate, ProjectUpdate, ProjectThumbnailUpdate, ProjectOut
-from ..deps import get_current_user
+from ..deps import get_current_user, require_roles
 from ..s3 import ensure_bucket, s3_internal_client
 from . import _audit
 
-router = APIRouter(prefix="/projects", tags=["projects"])
+router = APIRouter(
+    prefix="/projects",
+    tags=["projects"],
+    dependencies=[Depends(require_roles("admin", "designer", "site_supervisor"))],
+)
 
 
 def _missing_items_str(v):
@@ -130,6 +134,15 @@ async def seed_project_templates(project_id: UUID, db: AsyncSession, user: User)
 
     created = 0
     skipped = 0
+    user_id = inspect(user).identity[0]  # PK without DB IO
+
+    # Collect which "kinds" exist in the template root (even if folders are empty).
+    template_kinds: set[str] = set()
+    for d in root.iterdir():
+        if d.is_dir():
+            k = _kind_from_top_folder(d.name)
+            if k:
+                template_kinds.add(k)
 
     try:
         for p in sorted(root.rglob("*")):
@@ -137,8 +150,11 @@ async def seed_project_templates(project_id: UUID, db: AsyncSession, user: User)
                 continue
 
             rel = p.relative_to(root)
-            # ignore hidden / keep files
-            if rel.name.startswith(".") or rel.name.lower() in {".keep", "thumbs.db", ".ds_store"}:
+            # ignore junk files
+            # NOTE: allow ".keep" so empty template folders can still seed the project.
+            if rel.name.lower() in {"thumbs.db", ".ds_store"}:
+                continue
+            if rel.name.startswith(".") and rel.name.lower() != ".keep":
                 continue
 
             top = rel.parts[0] if rel.parts else ""
@@ -192,6 +208,69 @@ async def seed_project_templates(project_id: UUID, db: AsyncSession, user: User)
             )
 
             # create version 1
+            v_ins = await db.execute(text("""
+                INSERT INTO file_versions (file_id, version_no, object_key, etag, sha256, size_bytes, created_by, created_at)
+                VALUES (:file_id, 1, :object_key, NULL, :sha256, :size_bytes, :created_by, now())
+                RETURNING id
+            """), {
+                "file_id": str(fid),
+                "object_key": object_key,
+                "sha256": sha256,
+                "size_bytes": size_bytes,
+                "created_by": str(user_id),
+            })
+            ver_id = v_ins.mappings().one()["id"]
+
+            await db.execute(text("""
+                UPDATE files
+                SET current_version_id = :ver_id,
+                    size_bytes = :size_bytes,
+                    updated_at = now()
+                WHERE id = :fid
+            """), {"ver_id": str(ver_id), "size_bytes": size_bytes, "fid": str(fid)})
+
+            created += 1
+
+        # If template has empty folders (no files), seed a hidden placeholder so the UI still shows the section.
+        for kind in sorted(template_kinds):
+            any_file = await db.execute(text("""
+                SELECT id
+                FROM files
+                WHERE project_id = :pid AND kind = :kind
+                LIMIT 1
+            """), {"pid": str(project_id), "kind": kind})
+            if any_file.mappings().one_or_none():
+                continue
+
+            data = b""
+            display_name = ".keep"
+            size_bytes = 0
+            sha256 = hashlib.sha256(data).hexdigest()
+            mime = "application/octet-stream"
+
+            f_ins = await db.execute(text("""
+                INSERT INTO files (project_id, kind, name, mime, size_bytes, created_by, created_at, updated_at)
+                VALUES (:project_id, :kind, :name, :mime, :size_bytes, :created_by, now(), now())
+                RETURNING id
+            """), {
+                "project_id": str(project_id),
+                "kind": kind,
+                "name": display_name,
+                "mime": mime,
+                "size_bytes": size_bytes,
+                "created_by": str(user_id),
+            })
+            fid = f_ins.mappings().one()["id"]
+
+            upid = uuid.uuid4().hex
+            object_key = f"files/{fid}/seed/{upid}/{safe_name(display_name)}"
+            s3.put_object(
+                Bucket=settings.s3_bucket,
+                Key=object_key,
+                Body=data,
+                ContentType=mime,
+            )
+
             v_ins = await db.execute(text("""
                 INSERT INTO file_versions (file_id, version_no, object_key, etag, sha256, size_bytes, created_by, created_at)
                 VALUES (:file_id, 1, :object_key, NULL, :sha256, :size_bytes, :created_by, now())
@@ -314,7 +393,7 @@ async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db),
     return ProjectOut(**row)
 
 
-@router.post("/{project_id}/seed-templates")
+@router.post("/{project_id}/seed-templates", dependencies=[Depends(require_roles("admin", "designer"))])
 async def seed_templates(project_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     # Optional helper for when you change the template folder later.
     # Safe to run multiple times (it skips name+kind duplicates).
@@ -325,7 +404,7 @@ async def seed_templates(project_id: UUID, db: AsyncSession = Depends(get_db), u
     res = await seed_project_templates(project_id, db, user)
     await _audit.write(db, inspect(user).identity[0], "project.seed_templates", "project", project_id, meta=res)
     return {"ok": True, **res}
-@router.patch("/{project_id}/thumbnail", response_model=ProjectOut)
+@router.patch("/{project_id}/thumbnail", response_model=ProjectOut, dependencies=[Depends(require_roles("admin", "designer"))])
 async def set_project_thumbnail(
     project_id: UUID,
     req: ProjectThumbnailUpdate,
@@ -387,7 +466,7 @@ async def set_project_thumbnail(
     return ProjectOut(**row)
 
 
-@router.patch("/{project_id}", response_model=ProjectOut)
+@router.patch("/{project_id}", response_model=ProjectOut, dependencies=[Depends(require_roles("admin", "designer"))])
 async def update_project(project_id: UUID, req: ProjectUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     # load current row first so we can do "partial updates" safely
     cur_res = await db.execute(text("""
@@ -475,7 +554,7 @@ async def update_project(project_id: UUID, req: ProjectUpdate, db: AsyncSession 
     return ProjectOut(**row)
 
 
-@router.delete("/{project_id}")
+@router.delete("/{project_id}", dependencies=[Depends(require_roles("admin", "designer"))])
 async def delete_project(project_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     # gather project info
     qp = await db.execute(text("SELECT id, name FROM projects WHERE id=:id"), {"id": str(project_id)})

@@ -1,6 +1,6 @@
 import re
 import uuid
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,9 +13,12 @@ from ..db import get_db
 from ..deps import require_roles
 from ..models import Employee, Salary, Loan, Attendance, SalaryPayment
 
-router = APIRouter(prefix="/hr", tags=["hr"])
+router = APIRouter(prefix="/hr", tags=["hr"], dependencies=[Depends(require_roles("admin", "hr"))])
 
 MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+
+PAYROLL_DAYS_IN_MONTH = 30.0
+HOURS_PER_DAY = 8.0
 
 
 def _now():
@@ -41,6 +44,7 @@ class EmployeeCreate(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     hire_date: Optional[date] = None
+    end_date: Optional[date] = None
     base_salary: Optional[float] = None
     default_bonus: Optional[float] = None
     is_active: bool = True
@@ -53,6 +57,7 @@ class EmployeeUpdate(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     hire_date: Optional[date] = None
+    end_date: Optional[date] = None
     base_salary: Optional[float] = None
     default_bonus: Optional[float] = None
     is_active: Optional[bool] = None
@@ -66,6 +71,7 @@ class EmployeeOut(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     hire_date: Optional[date] = None
+    end_date: Optional[date] = None
     base_salary: Optional[float] = None
     default_bonus: Optional[float] = None
     is_active: bool
@@ -84,6 +90,7 @@ async def list_employees(db: AsyncSession = Depends(get_db)):
             phone=x.phone,
             email=x.email,
             hire_date=x.hire_date,
+            end_date=x.end_date,
             base_salary=_money(x.base_salary),
             default_bonus=_money(getattr(x, "default_bonus", None)),
             is_active=bool(x.is_active),
@@ -103,6 +110,7 @@ async def create_employee(payload: EmployeeCreate, db: AsyncSession = Depends(ge
         phone=(payload.phone.strip() if payload.phone else None),
         email=(payload.email.strip().lower() if payload.email else None),
         hire_date=payload.hire_date,
+        end_date=payload.end_date,
         base_salary=payload.base_salary,
         default_bonus=payload.default_bonus,
         is_active=payload.is_active,
@@ -124,6 +132,7 @@ async def create_employee(payload: EmployeeCreate, db: AsyncSession = Depends(ge
         phone=emp.phone,
         email=emp.email,
         hire_date=emp.hire_date,
+        end_date=emp.end_date,
         base_salary=_money(emp.base_salary),
         default_bonus=_money(getattr(emp, "default_bonus", None)),
         is_active=bool(emp.is_active),
@@ -154,6 +163,8 @@ async def update_employee(employee_id: str, payload: EmployeeUpdate, db: AsyncSe
         emp.email = payload.email.strip().lower() if payload.email else None
     if payload.hire_date is not None:
         emp.hire_date = payload.hire_date
+    if payload.end_date is not None:
+        emp.end_date = payload.end_date
     if payload.base_salary is not None:
         emp.base_salary = payload.base_salary
     if payload.default_bonus is not None:
@@ -173,7 +184,9 @@ async def update_employee(employee_id: str, payload: EmployeeUpdate, db: AsyncSe
         phone=emp.phone,
         email=emp.email,
         hire_date=emp.hire_date,
+        end_date=emp.end_date,
         base_salary=_money(emp.base_salary),
+        default_bonus=_money(getattr(emp, "default_bonus", None)),
         is_active=bool(emp.is_active),
     )
 
@@ -300,7 +313,7 @@ async def upsert_salary(payload: SalaryCreate, db: AsyncSession = Depends(get_db
         raise HTTPException(status_code=400, detail="Employee not found")
 
     base = float(emp.base_salary or 0.0)
-    hourly = (base / 30.0 / 8.0) if base > 0 else 0.0
+    hourly = (base / PAYROLL_DAYS_IN_MONTH / HOURS_PER_DAY) if base > 0 else 0.0
 
     bonuses = float(payload.bonuses or 0.0)
     ot_hours = float(payload.overtime_hours or 0.0)
@@ -402,23 +415,52 @@ async def upsert_salary(payload: SalaryCreate, db: AsyncSession = Depends(get_db
                 loan_used_for_salary = 0.0
 
     default_bonus = float(getattr(emp, "default_bonus", 0.0) or 0.0)
-    # attendance: absent days deduction ((base + default_bonus)/30 per day)
+
+    # Month window
     y, m = month.split("-")
     y = int(y); m = int(m)
-    start = date(y, m, 1)
-    end = date(y + 1, 1, 1) if m == 12 else date(y, m + 1, 1)
+    month_start = date(y, m, 1)
+    month_end_excl = date(y + 1, 1, 1) if m == 12 else date(y, m + 1, 1)
 
+    # Active employment window inside this month (hire_date/end_date)
+    active_from = month_start
+    if emp.hire_date and emp.hire_date > active_from:
+        active_from = emp.hire_date
+
+    active_to = month_end_excl
+    if emp.end_date:
+        end_excl = emp.end_date + timedelta(days=1)  # inclusive -> exclusive
+        if end_excl < active_to:
+            active_to = end_excl
+
+    if active_to < active_from:
+        active_to = active_from
+
+    # Payable days:
+    # - full employed month => 30 days
+    # - partial => actual calendar days (still divided by 30 for money)
+    full_month = (active_from == month_start and active_to == month_end_excl)
+    payable_days = 30 if full_month else (active_to - active_from).days
+    payable_days = max(0, min(30, int(payable_days)))
+
+    monthly_wage = float(base + default_bonus)
+    daily_wage = (monthly_wage / PAYROLL_DAYS_IN_MONTH) if monthly_wage > 0 else 0.0
+
+    # Base gross for this month (prorated for joiners/leavers)
+    gross_base = daily_wage * float(payable_days)
+
+    # Attendance deductions (unpaid leave/absent/sick) only inside active window
     qa = await db.execute(
         select(Attendance).where(
             Attendance.employee_id == emp.id,
-            Attendance.day >= start,
-            Attendance.day < end,
-            Attendance.status == "absent",
+            Attendance.day >= active_from,
+            Attendance.day < active_to,
             Attendance.deduct == True,
         )
     )
-    absent_days = len(qa.scalars().all())
-    absence_deduction = ((base + default_bonus) / 30.0) * float(absent_days)
+    deduct_days = min(len(qa.scalars().all()), payable_days)
+    absence_deduction = daily_wage * float(deduct_days)
+
 
     # payments: sum of partial payments for this month
     qp = await db.execute(
@@ -430,7 +472,7 @@ async def upsert_salary(payload: SalaryCreate, db: AsyncSession = Depends(get_db
     payments_total = sum(float(x.amount) for x in qp.scalars().all())
     already_paid = payments_total
 
-    gross = base + default_bonus + bonuses + ot_pay
+    gross = gross_base + bonuses + ot_pay
 
     # "deductions" is ONLY: attendance(absence) + manual payroll deductions
     deductions = manual_ded + absence_deduction
@@ -668,8 +710,15 @@ async def upsert_attendance(payload: AttendanceUpsert, db: AsyncSession = Depend
         raise HTTPException(status_code=400, detail="Invalid employee_id")
 
     q = await db.execute(select(Employee).where(Employee.id == eid))
-    if not q.scalar_one_or_none():
+    emp = q.scalar_one_or_none()
+    if not emp:
         raise HTTPException(status_code=400, detail="Employee not found")
+
+    # Block attendance outside employment dates (prevents accidental deductions)
+    if emp.hire_date and payload.day < emp.hire_date:
+        raise HTTPException(status_code=400, detail="Attendance day is before hire_date")
+    if emp.end_date and payload.day > emp.end_date:
+        raise HTTPException(status_code=400, detail="Attendance day is after end_date")
 
     qs = await db.execute(select(Attendance).where(Attendance.employee_id == eid, Attendance.day == payload.day))
     existing = qs.scalar_one_or_none()

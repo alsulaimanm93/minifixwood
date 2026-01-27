@@ -55,7 +55,7 @@ type FileVersionRow = {
 };
 
 
-type SectionKey = "overview" | "commercial" | "technical" | "images" | "cnc" | "materials";
+type SectionKey = "overview" | "commercial" | "technical" | "images" | "cnc";
 
 const STATUS_ORDER: Status[] = [
   "under_preparation",
@@ -75,7 +75,7 @@ const STATUS_TITLES: Record<Status, string> = {
   rejected: "Rejected",
 };
 
-const SECTION_ORDER: SectionKey[] = ["overview", "commercial", "technical", "images", "cnc", "materials"];
+const SECTION_ORDER: SectionKey[] = ["overview", "commercial", "technical", "images", "cnc"];
 
 const SECTION_TITLES: Record<SectionKey, string> = {
   overview: "Overview",
@@ -83,7 +83,6 @@ const SECTION_TITLES: Record<SectionKey, string> = {
   technical: "Technical",
   images: "Images",
   cnc: "CNC",
-  materials: "Materials",
 };
 
 function getAuthToken() {
@@ -134,6 +133,40 @@ function midEllipsisKeepExt(name: string, maxChars: number) {
   return out.length > maxChars ? out.slice(0, maxChars - keepExtLen - 1) + "…" + ext : out;
 }
 
+function splitNameTail(name: string) {
+  const n = name || "";
+
+  // keep trailing timestamp+ext like: " 03_12_2025, 10_06_31.pdf"
+  const m = n.match(/^(.*?)(\s+\d{2}_\d{2}_\d{4},\s*\d{2}_\d{2}_\d{2}\.[A-Za-z0-9]+)$/);
+  if (m) return { base: (m[1] || "").trimEnd(), tail: m[2] || "" };
+
+  const dot = n.lastIndexOf(".");
+  if (dot > 0 && dot < n.length - 1) return { base: n.slice(0, dot).trimEnd(), tail: n.slice(dot) };
+
+  return { base: n, tail: "" };
+}
+
+function shortFileNameDesktop(name: string) {
+  const n = name || "";
+  if (n.length <= 70) return n;
+
+  // keep trailing timestamp like: " 03_12_2025, 10_06_31.pdf"
+  const m = n.match(/(\s+\d{2}_\d{2}_\d{4},\s*\d{2}_\d{2}_\d{2}\.[A-Za-z0-9]+)$/);
+  const suffix = m ? m[1] : "";
+  const base = m ? n.slice(0, n.length - suffix.length).trimEnd() : n;
+
+  const parts = base.split(" - ");
+  const prefix =
+    parts.length >= 4
+      ? parts.slice(0, 3).join(" - ") + " - "
+      : base.slice(0, 28).trimEnd() + " ";
+
+  if (suffix) return `${prefix}.......${suffix}`;
+
+  // fallback: mid-ellipsis + keep extension
+  return midEllipsisKeepExt(n, 70).replace("…", ".......");
+}
+
 function previewKind(name: string) {
   const e = extOf(name);
   const isImg = ["jpg", "jpeg", "png", "webp", "gif"].includes(e);
@@ -154,13 +187,14 @@ function fmtSize(bytes: number) {
 
 function classifySection(f: FileRow): Exclude<SectionKey, "overview"> {
   const k = (f.kind || "").toLowerCase();
-  if (k === "commercial" || k === "technical" || k === "images" || k === "cnc" || k === "materials") return k as any;
+  if (k === "commercial" || k === "technical" || k === "images" || k === "cnc") return k as any;
+  if (k === "materials") return "cnc";
 
   const n = (f.name || "").toLowerCase();
   const { isCnc, isXlsx, isDocx, isImg, isPdf, isCsv } = previewKind(f.name || "");
 
   if (isCnc || n.includes("nest") || n.includes("toolpath") || n.includes("grouped")) return "cnc";
-  if (n.includes("bom") || n.includes("material") || n.includes("supplier") || n.includes("cutlist") || (isXlsx && n.includes("bom"))) return "materials";
+  if (n.includes("bom") || n.includes("material") || n.includes("supplier") || n.includes("cutlist") || (isXlsx && n.includes("bom"))) return "cnc";
   if (n.includes("invoice") || n.includes("contract") || n.includes("quote") || n.includes("quotation") || n.includes("receipt")) return "commercial";
   if (isDocx && (n.includes("contract") || n.includes("quote"))) return "commercial";
   if (n.includes("site") || n.includes("measure") || n.includes("dimension") || n.includes("as-built")) return "technical";
@@ -219,6 +253,10 @@ export default function ProjectsWorkspace() {
 
   const [projQ, setProjQ] = useState("");
 
+  const [importStatus, setImportStatus] = useState<Status>("under_preparation");
+  const [importBusy, setImportBusy] = useState(false);
+  const [fileQ, setFileQ] = useState("");
+
   // Mobile navigation (OneDrive-like): Projects -> Sections -> Files
   const [isMobile, setIsMobile] = useState(false);
   const [mobileView, setMobileView] = useState<"projects" | "sections" | "files">("projects");
@@ -240,6 +278,25 @@ export default function ProjectsWorkspace() {
       // @ts-ignore
       return () => mq.removeListener(apply);
     }
+  }, []);
+
+  // Hard stop: never allow horizontal scrolling (prevents the “icons hidden unless scroll-left” issue)
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    const html = document.documentElement;
+    const body = document.body;
+
+    const prevHtml = html.style.overflowX;
+    const prevBody = body.style.overflowX;
+
+    html.style.overflowX = "hidden";
+    body.style.overflowX = "hidden";
+
+    return () => {
+      html.style.overflowX = prevHtml;
+      body.style.overflowX = prevBody;
+    };
   }, []);
 
   // Project card size (Large/Medium/Small). Small uses grid.
@@ -710,6 +767,358 @@ export default function ProjectsWorkspace() {
     }
   }
 
+  function folderNameToStatus(folderName: string): Status | null {
+    const s = String(folderName || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[-\s]+/g, "_");
+
+    if (!s) return null;
+
+    if (s.includes("under") && (s.includes("preparation") || s.includes("preperation"))) return "under_preparation";
+
+    if (s.includes("prepared") && (s.includes("quotation") || s.includes("quotaion") || s.includes("quote"))) {
+      return "prepared_for_quotation";
+    }
+
+    // Pending Confirmation (many variants)
+    if (s === "pending_confirmation") return "pending_confirmation";
+    if (s.includes("pending") && s.includes("confirm")) return "pending_confirmation";
+    if (s.includes("waiting") && s.includes("confirm")) return "pending_confirmation";
+
+    if (s === "current" || s.includes("current")) return "current";
+    if (s.includes("finished")) return "finished";
+    if (s.includes("rejected")) return "rejected";
+
+    return null;
+  }
+
+  function sleep(ms: number) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  const BLOCKED_IMPORT_EXT = new Set(["blend","blend1", "mov", "mkv", "mp4"]);
+
+  function shouldSkipImportFile(f: File) {
+    const ex = String(extOf(f.name || "")).toLowerCase();
+    return BLOCKED_IMPORT_EXT.has(ex);
+  }
+
+  async function uploadToExistingFile(fileId: string, file: File, dbName: string) {
+    const safeFilename = dbName.includes("/") ? (dbName.split("/").pop() || file.name) : dbName;
+
+    let lastErr: any = null;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      let step = "initiate-upload";
+      try {
+        const init = await apiFetch<{ object_key: string; url: string; headers: Record<string, string> }>(
+          `/files/${fileId}/versions/initiate-upload`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              filename: safeFilename,
+              mime: file.type || "application/octet-stream",
+              size_bytes: file.size,
+            }),
+          }
+        );
+
+        step = "put";
+        let putResp: Response;
+        try {
+          putResp = await fetch(init.url, {
+            method: "PUT",
+            headers: init.headers || {},
+            body: file,
+          });
+        } catch (e: any) {
+          const host = (() => {
+            try { return new URL(init.url).host; } catch { return "bad-url"; }
+          })();
+          const msg = e?.message || String(e);
+          throw new Error(`PUT network error -> ${host} | ${Math.round(file.size / 1024)} KB | ${msg}`);
+        }
+
+        if (!putResp.ok) {
+          const t = await putResp.text().catch(() => "");
+          throw new Error(`PUT failed: ${putResp.status} ${putResp.statusText}${t ? ` - ${t.slice(0, 200)}` : ""}`);
+        }
+
+        const etag = putResp.headers.get("etag") || putResp.headers.get("ETag") || null;
+
+        step = "complete-upload";
+        await apiFetch(`/files/${fileId}/versions/complete-upload`, {
+          method: "POST",
+          body: JSON.stringify({
+            object_key: init.object_key,
+            etag,
+            sha256: null,
+            size_bytes: file.size,
+          }),
+        });
+
+        return;
+
+      } catch (e: any) {
+        lastErr = e;
+        if (attempt < 4) {
+          await sleep(400 * attempt);
+          continue;
+        }
+        throw new Error(`[${step}] ${e?.message || String(e)}`);
+      }
+    }
+
+    throw lastErr || new Error("Upload failed");
+  }
+
+  async function uploadToProject(projectId: string, file: File, forceSection: SectionKey, nameOverride?: string) {
+    const dbName = (nameOverride || file.name || "").trim() || file.name;
+
+    const inferredKind = classifySection({
+      id: "tmp",
+      project_id: projectId,
+      kind: "file",
+      name: dbName,
+      size_bytes: file.size,
+    } as any);
+
+    const uploadKind = (forceSection === "overview" ? inferredKind : (forceSection as any));
+
+    // 1) create DB file row (DO ONCE)
+    const created = await apiFetch<FileRow>("/files", {
+      method: "POST",
+      body: JSON.stringify({
+        project_id: projectId,
+        kind: uploadKind,
+        name: dbName,
+        mime: file.type || null,
+        size_bytes: file.size,
+      }),
+    });
+
+    const safeFilename = dbName.includes("/") ? (dbName.split("/").pop() || file.name) : dbName;
+
+    // 2-4) retry init/put/complete (NO duplicates)
+    let lastErr: any = null;
+
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      let step = "initiate-upload";
+      try {
+        const init = await apiFetch<{ object_key: string; url: string; headers: Record<string, string> }>(
+          `/files/${created.id}/versions/initiate-upload`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              filename: safeFilename,
+              mime: file.type || "application/octet-stream",
+              size_bytes: file.size,
+            }),
+          }
+        );
+
+        step = "put";
+        let putResp: Response;
+        try {
+          putResp = await fetch(init.url, {
+            method: "PUT",
+            headers: init.headers || {},
+            body: file,
+          });
+        } catch (e: any) {
+          const host = (() => {
+            try { return new URL(init.url).host; } catch { return "bad-url"; }
+          })();
+          const msg = e?.message || String(e);
+          throw new Error(`PUT network error -> ${host} | ${Math.round(file.size / 1024)} KB | ${msg}`);
+        }
+
+        if (!putResp.ok) {
+          const t = await putResp.text().catch(() => "");
+          throw new Error(`PUT failed: ${putResp.status} ${putResp.statusText}${t ? ` - ${t.slice(0, 200)}` : ""}`);
+        }
+
+        const etag = putResp.headers.get("etag") || putResp.headers.get("ETag") || null;
+
+        step = "complete-upload";
+        await apiFetch(`/files/${created.id}/versions/complete-upload`, {
+          method: "POST",
+          body: JSON.stringify({
+            object_key: init.object_key,
+            etag,
+            sha256: null,
+            size_bytes: file.size,
+          }),
+        });
+
+        return uploadKind as any;
+
+      } catch (e: any) {
+        lastErr = e;
+        const msg = e?.message || String(e);
+
+        // quick retry for fetch/network hiccups
+        if (attempt < 4) {
+          console.warn("[IMPORT] retry", { attempt, step, name: dbName, err: msg });
+          await sleep(400 * attempt);
+          continue;
+        }
+
+        throw new Error(`[${step}] ${msg}`);
+      }
+    }
+
+    throw lastErr || new Error("Upload failed");
+  }
+
+  async function importCategoryFolder(arr: File[]) {
+    console.log("[IMPORT] start", {
+      count: arr.length,
+      firstWp: arr[0] ? String((arr[0] as any).webkitRelativePath || "") : "",
+      sample: arr.slice(0, 5).map((f) => (f as any).webkitRelativePath || f.name),
+    });
+    if (!arr.length) {
+      setUploadErr("[IMPORT] no files received");
+      return;
+    }
+
+    const firstWp = String((arr[0] as any)?.webkitRelativePath || "");
+    const rootFolder = (firstWp.split("/")[0] || "").trim();
+    const autoStatus = folderNameToStatus(rootFolder);
+    const statusToUse: Status = (autoStatus || importStatus);
+
+    if (autoStatus && autoStatus !== importStatus) setImportStatus(autoStatus);
+
+    setImportBusy(true);
+    setUploadErr(null);
+
+    try {
+      // If root folder name matches a status, treat its subfolders as projects:
+      //   ROOT(status)/ProjectName/...files...
+      // Otherwise treat root itself as a single project folder.
+      const rootIsStatus = !!autoStatus;
+
+      const groups = new Map<string, { file: File; rel: string }[]>();
+
+      for (const f of arr) {
+        const wp = String((f as any)?.webkitRelativePath || "");
+        const parts = wp ? wp.split("/") : [f.name];
+
+        if (rootIsStatus) {
+          // Expect at least: status / project / file
+          if (parts.length < 3) continue;
+
+          const projName = (parts[1] || "").trim();
+          const rel = parts.slice(2).join("/");
+
+          if (!projName || !rel) continue;
+
+          if (!groups.has(projName)) groups.set(projName, []);
+          groups.get(projName)!.push({ file: f, rel });
+        } else {
+          const projName = (parts[0] || "Imported").trim();
+          const rel = parts.slice(1).join("/") || f.name;
+
+          if (!groups.has(projName)) groups.set(projName, []);
+          groups.get(projName)!.push({ file: f, rel });
+        }
+      }
+
+      console.log("[IMPORT] groups", { projects: groups.size, sample: Array.from(groups.keys()).slice(0, 10) });
+      setUploadErr(`[IMPORT] grouped ${groups.size} projects from ${arr.length} files`);
+
+      const failed: { proj: string; rel: string; err: string }[] = [];
+
+      let idx = 0;
+      const total = groups.size;
+
+      const norm = (s: string) => String(s || "").trim().toLowerCase();
+
+      for (const [projName, items] of groups.entries()) {
+        idx++;
+        setUploadErr(`Importing ${idx}/${total}: ${projName}`);
+
+        // 1) Reuse project if it already exists (by name)
+        const existingProj = (all || []).find((p: any) => norm(p.name) === norm(projName)) || null;
+
+        let pid = existingProj ? String((existingProj as any).id) : "";
+
+        if (!pid) {
+          const created = await apiFetch<Project>("/projects", {
+            method: "POST",
+            body: JSON.stringify({
+              name: projName,
+              status: "under_preparation",
+              priority: 0,
+              project_no: null,
+              seed_templates: false,
+            }),
+          });
+          pid = String((created as any).id);
+        }
+
+        // 2) Ensure project status matches selected category
+        const curStatus = existingProj ? String((existingProj as any).status || "") : "";
+        if (statusToUse !== "under_preparation" && curStatus !== statusToUse) {
+          await apiFetch<Project>(`/projects/${pid}`, {
+            method: "PATCH",
+            body: JSON.stringify({ status: statusToUse }),
+          });
+        }
+
+        // 3) Load existing files so we can SKIP uploaded and RETRY incomplete
+        const existingFiles = await apiFetch<FileRow[]>(`/files?project_id=${encodeURIComponent(pid)}`, { method: "GET" });
+        const byName = new Map<string, FileRow>();
+        for (const f of existingFiles) byName.set(String(f.name || ""), f);
+
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i];
+          setUploadErr(`Importing ${idx}/${total}: ${projName} (${i + 1}/${items.length})`);
+
+          if (shouldSkipImportFile(it.file)) continue;
+
+          const dbName = String(it.rel || it.file.name || "");
+          const row = byName.get(dbName);
+
+          // already uploaded
+          if (row && row.current_version_id) continue;
+
+          try {
+            // retry orphan row (no version)
+            if (row && !row.current_version_id) {
+              await uploadToExistingFile(row.id, it.file, dbName);
+            } else {
+              await uploadToProject(pid, it.file, "overview", dbName);
+            }
+          } catch (e: any) {
+            const msg = e?.message || String(e);
+            failed.push({ proj: projName, rel: dbName, err: msg });
+            console.warn("[IMPORT] file failed", { proj: projName, rel: dbName, err: msg });
+          }
+
+          // tiny throttle to reduce random PUT fetch failures on big imports
+          await sleep(120);
+        }
+      }
+
+
+      await loadAll();
+
+      if (failed.length) {
+        console.warn("[IMPORT] failed files", failed);
+        const head = failed.slice(0, 6).map((x) => `${x.proj}: ${x.rel} (${x.err})`).join(" | ");
+        setUploadErr(`[IMPORT] done with ${failed.length} failed. ${head}${failed.length > 6 ? " | ..." : ""}`);
+      } else {
+        setUploadErr(null);
+      }
+
+    } catch (e: any) {
+      setUploadErr(e?.message || String(e));
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
   async function uploadToSelectedProject(file: File) {
     if (!selectedProjectId) return;
     console.log("uploadToSelectedProject", { selectedProjectId, name: file.name, size: file.size, type: file.type });
@@ -796,6 +1205,7 @@ export default function ProjectsWorkspace() {
       return;
     }
 
+    setFileQ("");
     loadFiles(selectedProjectId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjectId]);
@@ -954,11 +1364,7 @@ async function openPreview(f: FileRow, versionId?: string | null) {
   const { isImg, isPdf } = previewKind(f.name);
   if (!isImg && !isPdf) return;
 
-  const token = getAuthToken();
-  if (!token) {
-    setPreviewErr("Not logged in");
-    return;
-  }
+  // cookie-based auth (no local token required)
 
   setBusyFileId(f.id);
   try {
@@ -967,7 +1373,7 @@ async function openPreview(f: FileRow, versionId?: string | null) {
       : `/api/files/${f.id}/download?inline=1`;
 
     const r = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
+      credentials: "include",
     });
     if (!r.ok) throw new Error(`Preview failed ${r.status}`);
     const blob = await r.blob();
@@ -1092,12 +1498,27 @@ This deletes the file and all its versions.`)
 }
 
   const visibleFiles = useMemo(() => {
-    if (section === "overview") return [...files].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    const needle = fileQ.trim().toLowerCase();
+
+    const matches = (f: FileRow) => {
+      if (!needle) return true;
+      const nm = String(f.name || "").toLowerCase();
+      const kd = String(f.kind || "").toLowerCase();
+      const ex = extOf(f.name || "");
+      const wantExt = needle.startsWith(".") ? needle.slice(1) : needle;
+      return nm.includes(needle) || kd.includes(needle) || ex === wantExt;
+    };
+
+    if (section === "overview") {
+      return [...files].filter(matches).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    }
+
     const want = section; // commercial / technical / images / cnc / materials
     return files
       .filter((f) => classifySection(f) === want)
+      .filter(matches)
       .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  }, [files, section]);
+  }, [files, section, fileQ]);
 
   const selectedFile = useMemo(() => {
     return visibleFiles.find((f) => f.id === selectedFileId) || null;
@@ -1108,9 +1529,15 @@ This deletes the file and all its versions.`)
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: isMobile ? "1fr" : "360px 260px 1fr",
+        gridTemplateColumns: isMobile
+          ? "1fr"
+          : "clamp(420px, 32vw, 680px) clamp(180px, 13vw, 240px) minmax(0, 1fr)",
         gap: 14,
         alignItems: "start",
+        width: "100%",
+        maxWidth: "100%",
+        minWidth: 0,
+        overflowX: "hidden",
       }}
     >
       {/* LEFT: project categories */}
@@ -1150,6 +1577,80 @@ This deletes the file and all its versions.`)
             >
               + New
             </button>
+
+            <input
+              id="importCategoryInput"
+              type="file"
+              multiple
+              style={{ position: "absolute", left: -9999, width: 1, height: 1, opacity: 0 }}
+              {...({ webkitdirectory: "true" } as any)}
+              onChange={(e) => {
+                const fl = e.target.files;
+                const arr = fl ? Array.from(fl) : [];
+                console.log("[IMPORT] picker", {
+                  has: !!fl,
+                  count: arr.length,
+                  first: arr[0] ? (arr[0] as any).webkitRelativePath || arr[0].name : null,
+                });
+
+                if (arr.length === 0) {
+                  setUploadErr("[IMPORT] picker returned 0 files");
+                  return;
+                }
+
+                setUploadErr(`[IMPORT] picked ${arr.length} files`);
+                e.target.value = "";
+
+                // IMPORTANT: pass the copied array, not the live FileList
+                importCategoryFolder(arr);
+              }}
+            />
+
+            <select
+              value={importStatus}
+              onChange={(e) => setImportStatus(e.target.value as any)}
+              disabled={importBusy || uploading}
+              title="If folder name isn't recognized, use this category"
+              style={{
+                padding: "8px 10px",
+                borderRadius: 12,
+                border: "1px solid #30363d",
+                background: "#0b0f17",
+                color: "#e6edf3",
+                fontWeight: 900,
+              }}
+            >
+              {STATUS_ORDER.map((st) => (
+                <option key={st} value={st}>
+                  {STATUS_TITLES[st]}
+                </option>
+              ))}
+            </select>
+
+            <label
+              htmlFor="importCategoryInput"
+              style={{
+                padding: "8px 12px",
+                borderRadius: 12,
+                border: "1px solid #30363d",
+                background: "#0b0f17",
+                color: "#e6edf3",
+                fontWeight: 900,
+                cursor: (importBusy || uploading) ? "not-allowed" : "pointer",
+                opacity: (importBusy || uploading) ? 0.6 : 1,
+                userSelect: "none",
+                display: "inline-block",
+              }}
+              title="Pick a category folder (e.g. under_preparation) that contains many project folders"
+              onClick={(e) => {
+                if (importBusy || uploading) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }
+              }}
+            >
+              Import Category Folder
+            </label>
 
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <button
@@ -1366,10 +1867,15 @@ This deletes the file and all its versions.`)
                 <div
                   style={{
                     padding: "0 8px 8px",
-                    display: projCardSize === "small" ? "grid" : "flex",
-                    gridTemplateColumns: projCardSize === "small" ? "repeat(2, minmax(0, 1fr))" : undefined,
-                    flexDirection: projCardSize === "small" ? undefined : "column",
-                    gap: projCardSize === "small" ? 10 : 6,
+                    display: "grid",
+                    gridTemplateColumns: isMobile
+                      ? "1fr"
+                      : (projCardSize === "large"
+                        ? "1fr"
+                        : projCardSize === "medium"
+                          ? "repeat(2, minmax(0, 1fr))"
+                          : "repeat(3, minmax(0, 1fr))"),
+                    gap: projCardSize === "small" ? 10 : 8,
                   }}
                 >
                   {items.length === 0 ? (
@@ -1404,8 +1910,15 @@ This deletes the file and all its versions.`)
                             userSelect: "none",
                           }}
                         >
-                          <div style={{ position: "relative", width: "100%", height: projectCardHeight,
- background: "#0b0f17" }}>
+                          <div
+  style={{
+    position: "relative",
+    width: "100%",
+    aspectRatio: "1 / 1",
+    minHeight: projectCardHeight, // fallback
+    background: "#0b0f17",
+  }}
+>
                             {thumbSavingProjectId === p.id ? (
                               <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.9, fontWeight: 900 }}>...</div>
                             ) : thumbId ? (
@@ -1481,15 +1994,20 @@ This deletes the file and all its versions.`)
                             >
                               <div style={{ minWidth: 0 }}>
                                 <div
+                                  title={p.name}
                                   style={{
                                     fontWeight: 950,
-                                    lineHeight: 1.2,
-                                    fontSize: 15,
+                                    lineHeight: 1.15,
+                                    fontSize: projCardSize === "small" ? 12 : projCardSize === "medium" ? 13 : 14,
                                     color: "#ffffff",
                                     textShadow: "0 2px 12px rgba(0,0,0,0.95)",
                                     overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap",
+
+                                    display: "-webkit-box",
+                                    WebkitBoxOrient: "vertical",
+                                    WebkitLineClamp: 2,
+                                    whiteSpace: "normal",
+                                    wordBreak: "break-word",
                                   }}
                                 >
                                   {p.name}
@@ -1801,17 +2319,20 @@ This deletes the file and all its versions.`)
                       justifyContent: "space-between",
                       gap: 10,
                       alignItems: "center",
-                      padding: "12px 12px",
+                      padding: "10px 10px",
                       borderRadius: 12,
                       border: "1px solid #30363d",
                       background: active ? "#111827" : "#0b0f17",
                       color: "#e6edf3",
                       cursor: "pointer",
                       textAlign: "left",
-                      fontSize: 14,
+                      minWidth: 0,
+                      fontSize: 13,
                     }}
                   >
-                    <div style={{ fontWeight: 900 }}>{SECTION_TITLES[k]}</div>
+                     <div style={{ fontWeight: 900, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                       {SECTION_TITLES[k]}
+                     </div>
                     <div style={{ opacity: 0.6, fontSize: 12 }}>{">"}</div>
                   </button>
                 );
@@ -1830,6 +2351,8 @@ This deletes the file and all its versions.`)
           padding: 14,
           minHeight: 560,
           display: isMobile && mobileView !== "files" ? "none" : "block",
+          minWidth: 0,
+          overflow: "hidden",
         }}
       >
         {!selectedProject ? (
@@ -2082,9 +2605,19 @@ This deletes the file and all its versions.`)
               </details>
             ) : null}
 
-            <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "0.9fr 1.1fr", gap: 14, alignItems: "start" }}>
+            <div
+  style={{
+    marginTop: 14,
+    display: "grid",
+    gridTemplateColumns: isMobile ? "1fr" : "minmax(0, 0.9fr) minmax(0, 1.1fr)",
+    gap: 14,
+    alignItems: "start",
+    width: "100%",
+    minWidth: 0,
+  }}
+>
             {/* Files list */}
-            <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minHeight: 520 }}>
+            <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minHeight: 520, minWidth: 0, overflow: "hidden" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", rowGap: 10 }}>
                 <div style={{ fontWeight: 900, fontSize: 15 }}>Files • {SECTION_TITLES[section]}</div>
 
@@ -2148,6 +2681,23 @@ This deletes the file and all its versions.`)
                 </div>
                 </div>
 
+                <input
+                  value={fileQ}
+                  onChange={(e) => setFileQ(e.target.value)}
+                  placeholder="Search files..."
+                  style={{
+                    width: "100%",
+                    marginTop: 10,
+                    boxSizing: "border-box",
+                    display: "block",
+                    padding: 10,
+                    borderRadius: 12,
+                    border: "1px solid #30363d",
+                    background: "#0b0f17",
+                    color: "#e6edf3",
+                    fontSize: 14,
+                  }}
+                />
 
                 <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
                 {visibleFiles.length === 0 ? (
@@ -2155,6 +2705,7 @@ This deletes the file and all its versions.`)
                 ) : (
                     visibleFiles.map((f) => {
                     const active = f.id === selectedFileId;
+                    const parts = splitNameTail(f.name);
                     return (
                         <button
                         key={f.id}
@@ -2177,29 +2728,43 @@ This deletes the file and all its versions.`)
                             justifyContent: "space-between",
                             gap: 10,
                             alignItems: "flex-start",
+                            minWidth: 0,
+                            overflow: "hidden",
                         }}
                         >
-                        <div style={{ minWidth: 0 }}>
-                          <div
-                            style={{
-                              fontWeight: 900,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
+                        <div style={{ minWidth: 0, flex: "1 1 auto" }}>
+                          {isMobile ? (
+                            <div
+                              style={{
+                                fontWeight: 900,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
 
-                              // Mobile: 2 lines max (no horizontal drag)
-                              display: isMobile ? "-webkit-box" : "block",
-                              WebkitLineClamp: isMobile ? 2 : undefined,
-                              WebkitBoxOrient: isMobile ? "vertical" : undefined,
-                              whiteSpace: isMobile ? "normal" : "nowrap",
-                              wordBreak: "break-word",
-                              lineHeight: 1.25,
-                            }}
-                            title={f.name}
-                          >
-                            {isMobile ? midEllipsisKeepExt(f.name, 46) : f.name}
-                          </div>
+                                // Mobile: 2 lines max (no horizontal drag)
+                                display: "-webkit-box",
+                                WebkitLineClamp: 2,
+                                WebkitBoxOrient: "vertical",
+                                whiteSpace: "normal",
+                                wordBreak: "break-word",
+                                lineHeight: 1.25,
+                              }}
+                              title={f.name}
+                            >
+                              {midEllipsisKeepExt(f.name, 46)}
+                            </div>
+                          ) : (
+                            <div
+                              title={f.name}
+                              style={{ fontWeight: 900, display: "flex", minWidth: 0, maxWidth: "100%", whiteSpace: "nowrap" }}
+                            >
+                              <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {parts.base}
+                              </span>
+                              <span style={{ flex: "0 0 auto" }}>{parts.tail}</span>
+                            </div>
+                          )}
 
-                          <div style={{ opacity: 0.75, fontSize: 12, whiteSpace: "nowrap" }}>
+                          <div style={{ opacity: 0.75, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>
                             {f.kind} - {extOf(f.name) || extFromMime(f.mime) || "file"} - {fmtSize(f.size_bytes)}
                           </div>
                         </div>
@@ -2212,7 +2777,7 @@ This deletes the file and all its versions.`)
             </div>
 
             {/* Preview */}
-            <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minHeight: 520 }}>
+            <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minHeight: 520, minWidth: 0, overflow: "hidden" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
                   <div style={{ fontWeight: 900, fontSize: 15 }}>Preview</div>
 
@@ -2321,7 +2886,19 @@ This deletes the file and all its versions.`)
                 <>
                     <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
                     <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
-                      <div style={{ fontWeight: 900, lineHeight: 1.25 }}>{selectedFile.name}</div>
+                      <div
+  title={selectedFile.name}
+  style={{
+    fontWeight: 900,
+    lineHeight: 1.25,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    maxWidth: "100%",
+  }}
+>
+  {shortFileNameDesktop(selectedFile.name)}
+</div>
                       {viewVersionNo ? (
                         <div style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid #30363d", background: "#0f1623", fontSize: 12, fontWeight: 900, opacity: 0.9 }}>
                           v{viewVersionNo}
@@ -2380,6 +2957,36 @@ This deletes the file and all its versions.`)
                     <button
                         onClick={async () => {
                           try {
+                            // Desktop (Tauri): open in default app
+                            const tauriInvoke =
+                              (typeof window !== "undefined" &&
+                                ((window as any).__TAURI__?.core?.invoke || (window as any).__TAURI__?.invoke)) ||
+                              null;
+                            if (tauriInvoke) {
+                              const token = getAuthToken();
+                              if (!token) throw new Error("Not logged in");
+
+                              const key = "desktop_client_id";
+                              let client_id = localStorage.getItem(key) || "";
+                              if (!client_id) {
+                                client_id =
+                                  (globalThis.crypto as any)?.randomUUID?.() ||
+                                  `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+                                localStorage.setItem(key, client_id);
+                              }
+
+                              const api_base = `${window.location.origin}/api`;
+                              await tauriInvoke("cache_open", {
+                                req: {
+                                  api_base,
+                                  token,
+                                  file_id: selectedFile.id,
+                                  client_id,
+                                },
+                              });
+                              return;
+                            }
+
                             const r = await apiFetch<{ url: string }>(`/files/${selectedFile.id}/presign-download`, { method: "POST" });
 
                             const resp = await fetch("http://127.0.0.1:17832/open", {
@@ -2408,7 +3015,7 @@ This deletes the file and all its versions.`)
                             }
                           } catch (e: any) {
                             // fallback: still open in browser if helper isn't running
-                            setPreviewErr((e?.message || String(e)) + " | Start tools/open_helper.py then try again.");
+                            setPreviewErr((e?.message || String(e)) + " | Desktop: restart app | Web: start tools/open_helper.py");
                             try {
                               const r2 = await apiFetch<{ url: string }>(`/files/${selectedFile.id}/presign-download`, { method: "POST" });
                               window.open(r2.url, "_blank", "noopener,noreferrer");

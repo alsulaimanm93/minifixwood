@@ -275,6 +275,42 @@ export default function ProjectPage() {
     setMsg(null);
     setBusyId(`open:${f.id}`);
     try {
+      // Desktop (Tauri): open in default app
+      const tauriInvoke =
+        (typeof window !== "undefined" &&
+          ((window as any).__TAURI__?.core?.invoke || (window as any).__TAURI__?.invoke)) ||
+        null;
+      if (tauriInvoke) {
+        const token =
+          (typeof window !== "undefined" &&
+            (localStorage.getItem("token") ||
+              localStorage.getItem("access_token") ||
+              localStorage.getItem("jwt"))) ||
+          "";
+        if (!token) throw new Error("Not logged in");
+
+        const key = "desktop_client_id";
+        let client_id = localStorage.getItem(key) || "";
+        if (!client_id) {
+          client_id =
+            (globalThis.crypto as any)?.randomUUID?.() ||
+            `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          localStorage.setItem(key, client_id);
+        }
+
+        const api_base = `${window.location.origin}/api`;
+        await tauriInvoke("cache_open", {
+          req: {
+            api_base,
+            token,
+            file_id: f.id,
+            client_id,
+          },
+        });
+
+        setMsg("Opened ✅ (desktop)");
+        return;
+      }
       // 1) get presigned download URL (auth works via apiFetch)
       const res = await apiFetch<{ url: string }>(`/files/${f.id}/presign-download`, {
         method: "POST",
@@ -312,7 +348,7 @@ export default function ProjectPage() {
       // "Failed to fetch" => helper not running
       setMsg(
         (e?.message || String(e)) +
-          " | If you see 'Failed to fetch', start the local helper first."
+          " | Desktop: restart app | Web: start the local helper."
       );
     } finally {
       setBusyId(null);

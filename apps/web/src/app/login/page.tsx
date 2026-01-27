@@ -1,16 +1,33 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 
 export default function LoginPage() {
-  const [email, setEmail] = useState("admin@local");
-  const [password, setPassword] = useState("admin123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
 
   const [showChangePw, setShowChangePw] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const savedEmail = localStorage.getItem("login.email") || "";
+    if (savedEmail) setEmail(savedEmail);
+
+    (async () => {
+      try {
+        await apiFetch("/auth/me"); // cookie-based session check
+        window.location.href = "/projects";
+      } catch {
+        setCheckingSession(false);
+      }
+    })();
+  }, []);
 
   async function onLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -22,7 +39,7 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }),
       });
 
-      localStorage.setItem("token", res.access_token);
+      localStorage.setItem("login.email", email);
 
       if (res.must_change_password) {
         setShowChangePw(true);
@@ -102,6 +119,7 @@ export default function LoginPage() {
 
         <button
           type="submit"
+          disabled={busy || checkingSession}
           style={{
             padding: 10,
             borderRadius: 12,
@@ -109,9 +127,11 @@ export default function LoginPage() {
             background: "#1f6feb",
             color: "white",
             fontWeight: 700,
+            opacity: busy || checkingSession ? 0.7 : 1,
+            cursor: busy || checkingSession ? "not-allowed" : "pointer",
           }}
         >
-          Login
+          {checkingSession ? "Checking session..." : "Login"}
         </button>
 
         {msg && <div style={{ color: "#ff7b72" }}>{msg}</div>}
