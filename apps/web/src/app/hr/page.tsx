@@ -90,6 +90,17 @@ type MoneyEntry = {
   reason: string;
 };
 
+const USER_ROLE_OPTIONS = [
+  { key: "site_supervisor", label: "Site Supervisor" },
+  { key: "designer", label: "Designer" },
+  { key: "employee", label: "Employee" },
+  { key: "worker", label: "Worker" },
+  { key: "viewer", label: "Viewer" },
+  { key: "manager", label: "Manager" },
+  { key: "hr", label: "HR" },
+  { key: "admin", label: "Admin" },
+] as const;
+
 function getAuthToken() {
   if (typeof window === "undefined") return "";
   return localStorage.getItem("token") || localStorage.getItem("access_token") || localStorage.getItem("jwt") || "";
@@ -476,6 +487,10 @@ export default function HrPayrollPage() {
   const [emailEmpId, setEmailEmpId] = useState<string | null>(null);
   const [emailDraft, setEmailDraft] = useState("");
   const [emailBusy, setEmailBusy] = useState(false);
+
+  // Role pick for creating user from HR screen
+  const [createUserRole, setCreateUserRole] = useState<string>("site_supervisor");
+  const [emailRole, setEmailRole] = useState<string>("site_supervisor");
 
   // One-time password reveal
   const [pwOpen, setPwOpen] = useState(false);
@@ -1403,10 +1418,11 @@ export default function HrPayrollPage() {
     if (!email) {
       setEmailEmpId(emp.id);
       setEmailDraft("");
+      setEmailRole(createUserRole);
       setEmailOpen(true);
       return;
     }
-    createUserForEmployee(emp.id, "employee", email);
+    createUserForEmployee(emp.id, createUserRole, email);
   }
 
   async function deleteAppUser(userId: string) {
@@ -1435,7 +1451,7 @@ export default function HrPayrollPage() {
       });
 
       setEmailOpen(false);
-      await createUserForEmployee(emailEmpId, "employee", email);
+      await createUserForEmployee(emailEmpId, emailRole, email);
 
       setEmailEmpId(null);
       setEmailDraft("");
@@ -2491,12 +2507,26 @@ export default function HrPayrollPage() {
 
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       {!u && emp && (
-                        <button
-                          onClick={() => startCreateUser(emp)}
-                          style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", fontWeight: 900 }}
-                        >
-                          Create user
-                        </button>
+                        <>
+                          <select
+                            value={createUserRole}
+                            onChange={(e) => setCreateUserRole(e.target.value)}
+                            style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", fontWeight: 900 }}
+                          >
+                            {USER_ROLE_OPTIONS.map((r) => (
+                              <option key={r.key} value={r.key}>
+                                {r.label}
+                              </option>
+                            ))}
+                          </select>
+
+                          <button
+                            onClick={() => startCreateUser(emp)}
+                            style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", fontWeight: 900 }}
+                          >
+                            Create user
+                          </button>
+                        </>
                       )}
 
                       {u && (
@@ -2650,11 +2680,23 @@ export default function HrPayrollPage() {
             </div>
 
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              <select
+                value={emailRole}
+                onChange={(e) => setEmailRole(e.target.value)}
+                style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", fontWeight: 900 }}
+              >
+                {USER_ROLE_OPTIONS.map((r) => (
+                  <option key={r.key} value={r.key}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+
               <input value={emailDraft} onChange={(e) => setEmailDraft(e.target.value)} placeholder="employee@email.com" style={{ padding: 10, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }} />
             </div>
 
             <div style={{ marginTop: 12, display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button onClick={() => { setEmailOpen(false); setEmailEmpId(null); setEmailDraft(""); }} style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", fontWeight: 900 }}>
+              <button onClick={() => { setEmailOpen(false); setEmailEmpId(null); setEmailDraft(""); setEmailRole("site_supervisor"); }} style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", fontWeight: 900 }}>
                 Cancel
               </button>
               <button onClick={saveEmployeeEmailAndCreateUser} disabled={emailBusy || !emailDraft.trim()} style={{ padding: "8px 12px", borderRadius: 12, border: "1px solid #30363d", background: "#1f6feb", color: "#e6edf3", fontWeight: 900, opacity: emailBusy || !emailDraft.trim() ? 0.7 : 1 }}>

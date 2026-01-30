@@ -1,0 +1,44 @@
+# VCS
+.git
+.github
+
+# Node / Next / build outputs
+**/node_modules
+**/.next
+**/out
+**/dist
+**/build
+**/coverage
+**/.cache
+**/.turbo
+
+# Rust / Tauri
+**/target
+
+# Python caches / junk
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/*.bak.*
+
+# Local secrets
+**/.env
+**/.env.*
+
+# Uploaded/project data (common)
+**/uploads
+**/upload
+**/storage
+**/media
+**/backups
+**/tmp
+
+# Big artifacts you don’t want in bundles
+backup_*.sql
+*.tsv
+*.csv
+*.bundle
+
+# Optional: exclude “templates” project docs if you consider them sensitive
+services/api/app/templates

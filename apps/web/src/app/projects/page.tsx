@@ -54,8 +54,16 @@ type FileVersionRow = {
   created_by?: string | null;
 };
 
+type Scope = {
+  id: string;
+  name: string;
+};
 
-type SectionKey = "overview" | "commercial" | "technical" | "images" | "cnc";
+
+type SectionKey = "dashboard" | "all_files" | "commercial" | "technical" | "images" | "cnc";
+
+/* MINIFIX_FILES_INNER_TABS_V1 */
+type FilesTab = "all" | "commercial" | "technical" | "images" | "cnc";
 
 const STATUS_ORDER: Status[] = [
   "under_preparation",
@@ -75,11 +83,13 @@ const STATUS_TITLES: Record<Status, string> = {
   rejected: "Rejected",
 };
 
-const SECTION_ORDER: SectionKey[] = ["overview", "commercial", "technical", "images", "cnc"];
+const SECTION_ORDER: SectionKey[] = ["dashboard", "all_files"];
 
 const SECTION_TITLES: Record<SectionKey, string> = {
-  overview: "Overview",
-  commercial: "Invoices & Contracts",
+  dashboard: "Dashboard",
+  /* MINIFIX_TOP_TAB_FILES_LABEL_V1 */
+  all_files: "Files",
+  commercial: "Invoices",
   technical: "Technical",
   images: "Images",
   cnc: "CNC",
@@ -310,7 +320,759 @@ export default function ProjectsWorkspace() {
     setProjCardSize((s) => (s === "small" ? "medium" : s === "medium" ? "large" : "large"));
   }
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [section, setSection] = useState<SectionKey>("overview");
+  const [section, setSection] = useState<SectionKey>("dashboard");
+
+  // Rooms / scopes inside one project
+  const [scopes, setScopes] = useState<Scope[]>([{ id: "main", name: "Overview" }]);
+  const [selectedScopeId, setSelectedScopeId] = useState<string>("main");
+
+  // Overview sub-tabs (enterprise control center)
+  const [overviewSub, setOverviewSub] = useState<"dashboard" | "quotation" | "items" | "progress">("dashboard");
+
+  /* MINIFIX_QUOTATION_CALC_STATE_V1_START */
+  type QuoteLine = {
+    id: string;
+
+    // line behavior
+    mode: "normal" | "labor";
+
+    // Inventory-backed dropdowns (UI now, backend later)
+    type_kind: "select" | "custom";
+    vendor_kind: "select" | "custom";
+
+    type: string;
+    description: string;
+    vendor: string;
+
+    // profit override for this line
+    profit_mode?: "inherit" | "none"; // "none" = pass-through (no profit)
+
+    // normal mode
+    qty: string;
+
+    // labor mode (workers x hours)
+    workers: string;
+    hours: string;
+
+    unit_price: string;
+  };
+
+  type QuoteSection = {
+    id: string;
+    title: string;
+    lines: QuoteLine[];
+    collapsed?: boolean;
+
+    // Profit behavior per section
+    profit_mode?: "global" | "none" | "custom";
+    profit_pct?: string; // used only when profit_mode === "custom"
+  };
+
+  const qNum = (s: any) => {
+    const n = Number(String(s ?? "").replace(/,/g, "").trim());
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const qMoney = (v: number) => {
+    if (!Number.isFinite(v)) return "0";
+    return v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  };
+
+  const qLineAmount = (ln: QuoteLine) => {
+    if (ln.mode === "labor") return qNum(ln.workers) * qNum(ln.hours) * qNum(ln.unit_price);
+    return qNum(ln.qty) * qNum(ln.unit_price);
+  };
+
+  const mkId = () =>
+    (globalThis.crypto as any)?.randomUUID?.() ||
+    `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const mkScopeId = () =>
+    (globalThis.crypto as any)?.randomUUID?.() ||
+    `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  function normalizeScopeName(name: string) {
+    // scope name is used as folder prefix; keep it filesystem safe
+    return String(name || "")
+      .trim()
+      .replace(/[\\/]+/g, "/")
+      .replace(/[:*?"<>|]/g, "")
+      .trim();
+  }
+
+  function scopeNameById(id: string) {
+    const hit = (scopes || []).find((s) => s.id === id);
+    return hit ? hit.name : "Overview";
+  }
+
+  function scopePrefixById(id: string) {
+    if (!id || id === "main") return "";
+    const nm = normalizeScopeName(scopeNameById(id));
+    return nm ? `${nm}/` : "";
+  }
+
+  function scopeMapLower() {
+    const m = new Map<string, string>();
+    for (const s of (scopes || [])) {
+      if (!s?.id || s.id === "main") continue;
+      const k = normalizeScopeName(s.name).toLowerCase();
+      if (k) m.set(k, s.id);
+    }
+    return m;
+  }
+
+  function fileScopeIdFromName(fileName: string) {
+    const nm = String(fileName || "");
+    const first = (nm.split("/")[0] || "").trim().toLowerCase();
+    if (!first) return "main";
+    const m = scopeMapLower();
+    return m.get(first) || "main";
+  }
+
+  function stripScopePrefixFromName(fileName: string) {
+    const nm = String(fileName || "");
+    const sid = fileScopeIdFromName(nm);
+    if (sid === "main") return nm;
+    const idx = nm.indexOf("/");
+    return idx >= 0 ? nm.slice(idx + 1) : nm;
+  }
+
+  async function scopesSave(nextScopes: Scope[], project?: Project | null) {
+    if (!selectedProjectId) return;
+    const p = project || selectedProject;
+    if (!p) return;
+
+    const inv = { ...(((p as any).inventory_state) || {}) };
+    inv.scopes_v1 = { v: 1, list: (nextScopes || []).map((s) => ({ id: s.id, name: s.name })) };
+
+    await apiFetch<Project>(`/projects/${selectedProjectId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ inventory_state: inv }),
+    });
+
+    await loadAll();
+  }
+
+  async function scopeAddPrompt() {
+    if (!selectedProjectId || !selectedProject) return;
+
+    const raw = (typeof window !== "undefined"
+      ? window.prompt("Room name (e.g. Kitchen, Bedroom 1):")
+      : "") || "";
+
+    const nm = normalizeScopeName(raw);
+    if (!nm) return;
+
+    const id = mkScopeId();
+
+    // ensure main exists first
+    const base = (scopes || []).some((s) => s.id === "main") ? [...(scopes || [])] : [{ id: "main", name: "Overview" }, ...(scopes || [])];
+
+    const next = [...base, { id, name: nm }];
+
+    setScopes(next);
+    setSelectedScopeId(id);
+
+    try {
+      await scopesSave(next, selectedProject);
+    } catch {}
+  }
+
+  /* MINIFIX_QUOTE_CATALOG_BY_SECTION_V1_START */
+  type QuoteCatalogItem = { label: string; price: number };
+
+  const QUOTE_CATALOG_BY_SECTION: Record<string, QuoteCatalogItem[]> = {
+    // NOTE: Labor section: NO dropdowns. Rate is fixed (25 QAR/hour).
+    labor_cost: [],
+
+    sheet_cutting_lipping: [
+      { label: "18MM SHEET TURKEY", price: 205 },
+      { label: "LIPPING 2CM", price: 2 },
+      { label: "LIPPING 4CM", price: 6 },
+      { label: "CUTTING", price: 10 },
+      { label: "PRESSING", price: 10 },
+      { label: "4MM SHEET TURKEY", price: 50 },
+      { label: "18MM SHEET EUROPE", price: 300 },
+      { label: "18MM MDF", price: 58 },
+      { label: "12MM MDF", price: 45 },
+      { label: "3MM PVC MARBLE", price: 110 },
+      { label: "1 SQM PAINTING", price: 100 },
+    ],
+
+    cabinet_accessories: [
+      { label: "CHINESE HINGE", price: 3.5 },
+      { label: "CHINESE SLIDE", price: 25 },
+      { label: "MINIFIX FITTING", price: 0.25 },
+      { label: "PUSH OPEN", price: 3.5 },
+      { label: "PLASTIC GROMMET", price: 3.5 },
+      { label: "1M LIGHTING", price: 25 },
+      { label: "LED PSW 60W", price: 25 },
+      { label: "LED PSW 100W", price: 30 },
+      { label: "LED PSW 150W", price: 40 },
+      { label: "LED PSW SENSOR", price: 14 },
+      { label: "1SQM MIRROR", price: 80 },
+      { label: "SMALL HANDLE", price: 10 },
+      { label: "MEDIUM HANDLE", price: 20 },
+      { label: "BIG HANDLE", price: 30 },
+      { label: "STEEL GROMMET", price: 10 },
+      { label: "ALUMINUM DOOR", price: 300 },
+      { label: "DIAGRAPH PUMP", price: 250 },
+      { label: "AUSTRIA HINGE", price: 9 },
+    ],
+
+    marble_work: [
+      { label: "20MM MARBLE SLAB", price: 550 },
+      { label: "20MM MARBLE SLAB DOUBLED", price: 750 },
+      { label: "20MM ARTIFICIAL MARBLE", price: 350 },
+      { label: "20MM ARTIFICIAL MARBLE DOUBLED", price: 550 },
+    ],
+
+    accessories_wo_pct: [
+      { label: "OSCAR FRIDGE", price: 550 },
+      { label: "GEEPAS FRIDGE", price: 600 },
+      { label: "built in microwave (electrolux)", price: 1350 },
+      { label: "tinad ikea fridge", price: 3100 },
+      { label: "beko / generalco hob", price: 550 },
+      { label: "sink and faucet (big)", price: 400 },
+      { label: "POWER TRACK 40 CM", price: 70 },
+      { label: "POWER TRACK 60 CM", price: 110 },
+      { label: "POWER TRACK 80 CM", price: 140 },
+      { label: "POWER TRACK 100 CM", price: 160 },
+      { label: "MAGNETIC SOCKET", price: 35 },
+      { label: "MAGNETIC USB", price: 50 },
+    ],
+
+    other_costs: [],
+  };
+
+  const QUOTE_VENDOR_BY_SECTION: Record<string, string[]> = {
+    labor_cost: ["Local"],
+    sheet_cutting_lipping: ["Turkey", "Europe", "Local"],
+    cabinet_accessories: ["China", "Local"],
+    marble_work: ["Marble Supplier", "Local"],
+    accessories_wo_pct: ["IKEA", "Beko", "Generalco", "Local"],
+    other_costs: ["Local"],
+  };
+
+  const FIXED_LABOR_UNIT_PRICE_QAR = 25;
+
+  function blankLine(sectionId: string): QuoteLine {
+    const isLabor = sectionId === "labor_cost";
+    return {
+      id: mkId(),
+      mode: isLabor ? "labor" : "normal",
+
+      type_kind: isLabor ? "custom" : "select",
+      vendor_kind: "select",
+
+      type: isLabor ? "PER LABOR COST" : "",
+      description: "",
+      vendor: "",
+
+      // default: profit is inherited from section/global
+      profit_mode: "inherit",
+
+      qty: "",
+
+      workers: "",
+      hours: "",
+
+      unit_price: isLabor ? String(FIXED_LABOR_UNIT_PRICE_QAR) : "",
+    };
+  }
+  /* MINIFIX_QUOTE_CATALOG_BY_SECTION_V1_END */
+
+  // Empty template like your Excel (sections exist; fields empty; add lines as needed)
+  const defaultQuotationSections = (): QuoteSection[] => ([
+    { id: "labor_cost", title: "WORKSHOP RENTAL AND LABOR COST", lines: [blankLine("labor_cost")], profit_mode: "global" },
+    { id: "sheet_cutting_lipping", title: "SHEET, CUTTING, LIPPING, PRESSING", lines: [blankLine("sheet_cutting_lipping")], profit_mode: "global" },
+    { id: "cabinet_accessories", title: "ACCESSORIES", lines: [blankLine("cabinet_accessories")], profit_mode: "global" },
+
+    // Pass-through: we buy appliances as a free service → no profit
+
+    { id: "marble_work", title: "MARBLE WORK", lines: [blankLine("marble_work")], profit_mode: "global" },
+    { id: "other_costs", title: "OTHER COSTS", lines: [blankLine("other_costs")], profit_mode: "global" },
+  ]);
+
+  const [quoteSections, setQuoteSections] = useState<QuoteSection[]>(defaultQuotationSections);
+  const [quoteProfitPct, setQuoteProfitPct] = useState<string>("40"); // default like your sheet
+  const [quoteCurrency, setQuoteCurrency] = useState<"QAR">("QAR");
+
+  const [quoteCustomerPrice, setQuoteCustomerPrice] = useState<string>("");
+
+  const [quoteEditing, setQuoteEditing] = useState(false);
+  const [quoteBusy, setQuoteBusy] = useState(false);
+  const [quoteMsg, setQuoteMsg] = useState<string | null>(null);
+  const quoteSavedSnapRef = React.useRef<string>("");
+
+  const [combinedQuote, setCombinedQuote] = useState<null | {
+    cost: number;
+    profit: number;
+    final: number;
+    customer_price: number;
+    customer_profit: number;
+    customer_profit_pct: number;
+  }>(null);
+
+  const [combinedQuoteRows, setCombinedQuoteRows] = useState<Array<{
+    scope_id: string;
+    scope_name: string;
+    cost: number;
+    final: number;
+    customer_price: number;
+  }>>([]);
+
+  const [combinedQuoteSections, setCombinedQuoteSections] = useState<Array<{
+    id: string;
+    title: string;
+    lines: Array<any>;
+    subtotal: number;
+  }>>([]);
+
+  const quoteSerializeFrom = (sections: QuoteSection[], currency: any, globalProfitPct: any) => ({
+    v: 1,
+    currency,
+    global_profit_pct: globalProfitPct,
+    customer_price: quoteCustomerPrice,
+    sections: (sections || []).map((s) => ({
+      id: s.id,
+      title: s.title,
+      profit_mode: s.profit_mode || "global",
+      profit_pct: s.profit_pct || "",
+      lines: s.lines || [],
+    })),
+  });
+
+  const quoteSerialize = () => quoteSerializeFrom(quoteSections, quoteCurrency, quoteProfitPct);
+
+  const quoteLoad = (payload: any) => {
+    if (!payload || typeof payload !== "object") return false;
+    const secs = Array.isArray(payload.sections) ? payload.sections : null;
+    if (!secs) return false;
+
+    setQuoteCurrency((payload.currency || "QAR") as any);
+    setQuoteProfitPct(String(payload.global_profit_pct ?? "40"));
+    setQuoteCustomerPrice(String(payload.customer_price ?? ""));
+
+    const normalized: QuoteSection[] = secs.map((s: any) => {
+      const id = String(s.id || "");
+      const forcedTitle =
+        id === "cabinet_accessories" ? "ACCESSORIES" :
+        id === "labor_cost" ? "WORKSHOP RENTAL AND LABOR COST" :
+        id === "sheet_cutting_lipping" ? "SHEET, CUTTING, LIPPING, PRESSING" :
+        id === "marble_work" ? "MARBLE WORK" :
+        id === "other_costs" ? "OTHER COSTS" :
+        String(s.title || "");
+
+      return {
+        id,
+        title: forcedTitle,
+        lines: Array.isArray(s.lines) ? s.lines : [],
+        profit_mode: (s.profit_mode || "global") as any,
+        profit_pct: String(s.profit_pct ?? ""),
+      };
+    }).filter((s: any) => s.id);
+
+    // MIGRATION: merge old accessories_wo_pct into cabinet_accessories as pass-through
+    const idxAcc = normalized.findIndex((x) => x.id === "cabinet_accessories");
+    const idxOld = normalized.findIndex((x) => x.id === "accessories_wo_pct");
+    if (idxAcc >= 0 && idxOld >= 0) {
+      const oldLines = (normalized[idxOld].lines || []).map((ln: any) => ({ ...ln, profit_mode: "none" }));
+      normalized[idxAcc] = { ...normalized[idxAcc], lines: [...(normalized[idxAcc].lines || []), ...oldLines] };
+      normalized.splice(idxOld, 1);
+    }
+
+    if (normalized.length) setQuoteSections(normalized);
+    return true;
+  };
+
+  function quoteTotalsFromPayload(payload: any) {
+    const sections = Array.isArray(payload?.sections) ? payload.sections : [];
+    const globalPct = qNum(payload?.global_profit_pct);
+
+    const secPct = (sec: any) => {
+      const mode = String(sec?.profit_mode || "global");
+      if (mode === "none") return 0;
+      if (mode === "custom") return Math.max(0, qNum(sec?.profit_pct));
+      return Math.max(0, globalPct);
+    };
+
+    const linePct = (sec: any, ln: any) => {
+      if (String(ln?.profit_mode || "inherit") === "none") return 0;
+      return secPct(sec);
+    };
+
+    let cost = 0;
+    let profit = 0;
+
+    for (const sec of sections) {
+      const lines = Array.isArray(sec?.lines) ? sec.lines : [];
+      for (const ln of lines) {
+        const mode = String(ln?.mode || "normal");
+        const amt =
+          mode === "labor"
+            ? qNum(ln?.workers) * qNum(ln?.hours) * qNum(ln?.unit_price)
+            : qNum(ln?.qty) * qNum(ln?.unit_price);
+
+        cost += amt;
+        profit += amt * (linePct(sec, ln) / 100);
+      }
+    }
+
+    const final = cost + profit;
+    const customer_price = qNum(payload?.customer_price);
+
+    return { cost, profit, final, customer_price };
+  }
+
+  function computeCombinedQuotationFromInventory(inv: any) {
+    const byScope =
+      inv?.quotations_v2?.by_scope && typeof inv.quotations_v2.by_scope === "object"
+        ? inv.quotations_v2.by_scope
+        : {};
+
+    const rows: Array<{ scope_id: string; scope_name: string; cost: number; final: number; customer_price: number }> = [];
+
+    const secMap = new Map<string, { id: string; title: string; lines: any[]; subtotal: number }>();
+
+    let cost = 0;
+    let profit = 0;
+    let final = 0;
+    let customer_price = 0;
+
+    for (const [sid, payload] of Object.entries(byScope)) {
+      if (!sid || sid === "main") continue;
+
+      const nm = scopeNameById(String(sid));
+
+      const t = quoteTotalsFromPayload(payload);
+      rows.push({ scope_id: String(sid), scope_name: nm, cost: t.cost, final: t.final, customer_price: t.customer_price });
+
+      cost += t.cost;
+      profit += t.profit;
+      final += t.final;
+      customer_price += t.customer_price;
+
+      const secs = Array.isArray((payload as any)?.sections) ? (payload as any).sections : [];
+      for (const s of secs) {
+        const id = String(s?.id || "");
+        if (!id) continue;
+
+        const forcedTitle =
+          id === "cabinet_accessories" ? "ACCESSORIES" :
+          id === "labor_cost" ? "WORKSHOP RENTAL AND LABOR COST" :
+          id === "sheet_cutting_lipping" ? "SHEET, CUTTING, LIPPING, PRESSING" :
+          id === "marble_work" ? "MARBLE WORK" :
+          id === "other_costs" ? "OTHER COSTS" :
+          String(s?.title || id);
+
+        if (!secMap.has(id)) secMap.set(id, { id, title: forcedTitle, lines: [], subtotal: 0 });
+
+        const bucket = secMap.get(id)!;
+
+        const lines = Array.isArray(s?.lines) ? s.lines : [];
+        for (const ln of lines) {
+          const mode = String(ln?.mode || "normal");
+          const amt =
+            mode === "labor"
+              ? qNum(ln?.workers) * qNum(ln?.hours) * qNum(ln?.unit_price)
+              : qNum(ln?.qty) * qNum(ln?.unit_price);
+
+          bucket.subtotal += amt;
+
+          const modeKey = String(ln?.mode || "normal");
+          const typeKey = String(ln?.type || "").trim().toLowerCase();
+          const rate = qNum(ln?.unit_price);
+          const pm = String(ln?.profit_mode || "inherit");
+
+          // group key: same item + same price + same mode + same profit rule
+          const key = `${modeKey}|${typeKey}|${rate}|${pm}`;
+
+          const bucketAny: any = bucket as any;
+          if (!bucketAny.__agg) bucketAny.__agg = new Map<string, any>();
+          const agg: Map<string, any> = bucketAny.__agg;
+
+          let cur = agg.get(key);
+          if (!cur) {
+            cur = {
+              id: ln?.id || key,
+              mode: modeKey,
+              type: ln?.type || "",
+              description: ln?.description || "",
+              unit_price: String(ln?.unit_price ?? ""),
+              profit_mode: pm,
+
+              // sums
+              __qty_sum: 0,
+              __man_hours_sum: 0,
+              __amount: 0,
+
+              // scopes
+              __scope_names: [] as string[],
+              __scope_ids: [] as string[],
+
+              __section_id: id,
+              __section_title: forcedTitle,
+            };
+            agg.set(key, cur);
+          }
+
+          // merge scope list
+          if (!cur.__scope_ids.includes(String(sid))) cur.__scope_ids.push(String(sid));
+          if (!cur.__scope_names.includes(nm)) cur.__scope_names.push(nm);
+
+          // merge numbers
+          if (modeKey === "labor") {
+            const mh = qNum(ln?.workers) * qNum(ln?.hours);
+            cur.__man_hours_sum += mh;
+          } else {
+            cur.__qty_sum += qNum(ln?.qty);
+          }
+
+          cur.__amount += amt;
+
+          // keep the most useful description (first non-empty)
+          if (!cur.description && ln?.description) cur.description = ln.description;
+        }
+      }
+    }
+
+    // fallback: if no subproject quotes yet, show legacy main if exists
+    if (rows.length === 0 && inv?.quotation_v1) {
+      const t = quoteTotalsFromPayload(inv.quotation_v1);
+      rows.push({ scope_id: "main", scope_name: "Overview", cost: t.cost, final: t.final, customer_price: t.customer_price });
+      cost = t.cost;
+      profit = t.profit;
+      final = t.final;
+      customer_price = t.customer_price;
+    }
+
+    const customer_profit = customer_price - cost;
+    const customer_profit_pct = cost > 0 ? (customer_profit / cost) * 100 : 0;
+
+    const sections = Array.from(secMap.values());
+
+    // finalize aggregated lines into arrays
+    for (const s of sections as any[]) {
+      const agg: Map<string, any> | null = (s as any).__agg || null;
+      if (agg) {
+        s.lines = Array.from(agg.values()).map((x: any) => {
+          const label =
+            x.__scope_names.length <= 1 ? (x.__scope_names[0] || "—") : `${x.__scope_names.length} subprojects`;
+          return { ...x, __scope_label: label };
+        });
+
+        // stable sort: type then amount desc
+        s.lines.sort((a: any, b: any) => {
+          const ta = String(a.type || "").localeCompare(String(b.type || ""));
+          if (ta !== 0) return ta;
+          return qNum(b.__amount) - qNum(a.__amount);
+        });
+      }
+    }
+
+    // stable ordering similar to your template
+    const order = defaultQuotationSections().map((s) => s.id);
+    sections.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+
+    return {
+      totals: { cost, profit, final, customer_price, customer_profit, customer_profit_pct },
+      rows,
+      sections,
+    };
+  }
+
+  function quoteCancelEdits() {
+    try {
+      const snap = quoteSavedSnapRef.current;
+      if (snap) {
+        const obj = JSON.parse(snap);
+        void quoteLoad(obj);
+      }
+    } catch {}
+    setQuoteEditing(false);
+    setQuoteMsg(null);
+  }
+
+  async function quoteSave() {
+    if (!selectedProjectId || !selectedProject) return;
+
+    setQuoteBusy(true);
+    setQuoteMsg(null);
+    try {
+      const inv = { ...(((selectedProject as any).inventory_state) || {}) };
+      const payload = quoteSerialize();
+
+      const sid = selectedScopeId || "main";
+
+      const pack =
+        inv.quotations_v2 && typeof inv.quotations_v2 === "object"
+          ? inv.quotations_v2
+          : { v: 2, by_scope: {} };
+
+      pack.v = 2;
+      pack.by_scope = pack.by_scope && typeof pack.by_scope === "object" ? pack.by_scope : {};
+      pack.by_scope[sid] = payload;
+
+      inv.quotations_v2 = pack;
+
+      // keep legacy only for main (compat with old data)
+      if (sid === "main") inv.quotation_v1 = payload;
+
+      await apiFetch<Project>(`/projects/${selectedProjectId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ inventory_state: inv }),
+      });
+
+      quoteSavedSnapRef.current = JSON.stringify(payload);
+      setQuoteEditing(false);
+      setQuoteMsg("Saved.");
+      await loadAll();
+    } catch (e: any) {
+      setQuoteMsg(e?.message || String(e));
+    } finally {
+      setQuoteBusy(false);
+    }
+  }
+
+  const quoteSectionSubtotal = (sec: QuoteSection) => (sec.lines || []).reduce((sum, ln) => sum + qLineAmount(ln), 0);
+
+  const quoteEffectivePct = (sec: QuoteSection) => {
+    const mode = sec.profit_mode || "global";
+    if (mode === "none") return 0;
+    if (mode === "custom") return Math.max(0, qNum(sec.profit_pct));
+    return Math.max(0, qNum(quoteProfitPct));
+  };
+
+  const quoteLineEffectivePct = (sec: QuoteSection, ln: QuoteLine) => {
+    if ((ln as any)?.profit_mode === "none") return 0;
+    return quoteEffectivePct(sec);
+  };
+
+  const quoteCostTotalAll = useMemo(
+    () => quoteSections.reduce((sum, s) => sum + quoteSectionSubtotal(s), 0),
+    [quoteSections]
+  );
+
+  const quoteProfitAmount = useMemo(() => {
+    return quoteSections.reduce((sum, s) => {
+      const lines = s.lines || [];
+      const add = lines.reduce((acc, ln) => {
+        const amt = qLineAmount(ln);
+        const pct = quoteLineEffectivePct(s, ln);
+        return acc + amt * (pct / 100);
+      }, 0);
+      return sum + add;
+    }, 0);
+  }, [quoteSections, quoteProfitPct]);
+
+  const quoteProfitBaseTotal = useMemo(() => {
+    return quoteSections.reduce((sum, s) => {
+      const lines = s.lines || [];
+      const add = lines.reduce((acc, ln) => {
+        const amt = qLineAmount(ln);
+        const pct = quoteLineEffectivePct(s, ln);
+        return pct > 0 ? acc + amt : acc;
+      }, 0);
+      return sum + add;
+    }, 0);
+  }, [quoteSections, quoteProfitPct]);
+
+  const quotePassThroughTotal = useMemo(() => {
+    return quoteSections.reduce((sum, s) => {
+      const lines = s.lines || [];
+      const add = lines.reduce((acc, ln) => {
+        const amt = qLineAmount(ln);
+        const pct = quoteLineEffectivePct(s, ln);
+        return pct <= 0 ? acc + amt : acc;
+      }, 0);
+      return sum + add;
+    }, 0);
+  }, [quoteSections, quoteProfitPct]);
+
+  const quoteFinalTotal = useMemo(
+    () => quoteCostTotalAll + quoteProfitAmount,
+    [quoteCostTotalAll, quoteProfitAmount]
+  );
+
+  const quoteCustomerPriceNum = useMemo(() => qNum(quoteCustomerPrice), [quoteCustomerPrice]);
+
+  const quoteCustomerProfit = useMemo(() => {
+    const p = quoteCustomerPriceNum - quoteCostTotalAll;
+    return Number.isFinite(p) ? p : 0;
+  }, [quoteCustomerPriceNum, quoteCostTotalAll]);
+
+  const quoteCustomerProfitPct = useMemo(() => {
+    if (quoteCostTotalAll <= 0) return 0;
+    const pct = (quoteCustomerProfit / quoteCostTotalAll) * 100;
+    return Number.isFinite(pct) ? pct : 0;
+  }, [quoteCustomerProfit, quoteCostTotalAll]);
+
+  function quoteUpdateSection(sectionId: string, patch: Partial<QuoteSection>) {
+    setQuoteSections((prev) => prev.map((s) => (s.id === sectionId ? { ...s, ...patch } : s)));
+  }
+
+  function quoteUpdateLine(sectionId: string, lineId: string, patch: Partial<QuoteLine>) {
+    if (!quoteEditing) return;
+    setQuoteSections((prev) =>
+      prev.map((s) =>
+        s.id !== sectionId
+          ? s
+          : { ...s, lines: s.lines.map((ln) => (ln.id === lineId ? { ...ln, ...patch } : ln)) }
+      )
+    );
+  }
+
+  function quoteAddLine(sectionId: string) {
+    if (!quoteEditing) return;
+    setQuoteSections((prev) =>
+      prev.map((s) =>
+        s.id !== sectionId
+          ? s
+          : {
+              ...s,
+              lines: [
+                ...s.lines,
+                blankLine(sectionId),
+              ],
+            }
+      )
+    );
+  }
+
+  function quoteAddServiceFee(sectionId: string) {
+    if (!quoteEditing) return;
+
+    const ln: QuoteLine = {
+      ...blankLine(sectionId),
+      type_kind: "custom",
+      type: "SERVICE CHARGE",
+      description: "Accessories purchase service",
+      qty: "1",
+      unit_price: "",
+      profit_mode: "none", // important: don’t apply profit again
+    };
+
+    setQuoteSections((prev) =>
+      prev.map((s) => (s.id !== sectionId ? s : { ...s, lines: [...(s.lines || []), ln] }))
+    );
+  }
+
+  function quoteRemoveLine(sectionId: string, lineId: string) {
+    if (!quoteEditing) return;
+    setQuoteSections((prev) =>
+      prev.map((s) =>
+        s.id !== sectionId ? s : { ...s, lines: s.lines.filter((ln) => ln.id !== lineId) } /* MINIFIX_REMOVE_LINE_V1 */
+      )
+    );
+  }
+  /* MINIFIX_QUOTATION_CALC_STATE_V1_END */
+
+  /* MINIFIX_ATTACHMENTS_COLLAPSE_STATE_V1 */
+  const [attachmentsOpen, setAttachmentsOpen] = useState(true);
+
+  /* MINIFIX_ALL_FILES_TAB_STATE_V1 */
+  const [filesTab, setFilesTab] = useState<FilesTab>("all");
 
   const [newOpen, setNewOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -351,7 +1113,7 @@ export default function ProjectsWorkspace() {
       setNewName("");
       await loadAll();
       setSelectedProjectId(String(created.id));
-      setSection("overview");
+      setSection("dashboard");
     } catch (e: any) {
       setNewErr(e?.message || String(e));
     } finally {
@@ -415,7 +1177,8 @@ export default function ProjectsWorkspace() {
       await apiFetch<{ ok: boolean }>(`/projects/${selectedProjectId}`, { method: "DELETE" });
       setProjDeleteOpen(false);
       setSelectedProjectId(null);
-      setSection("overview");
+      /* MINIFIX_OVERVIEW_TO_DASHBOARD_V1 */
+      setSection("dashboard");
       await loadAll();
     } catch (e: any) {
       setErr(e?.message || String(e));
@@ -883,7 +1646,7 @@ export default function ProjectsWorkspace() {
       size_bytes: file.size,
     } as any);
 
-    const uploadKind = (forceSection === "overview" ? inferredKind : (forceSection as any));
+    const uploadKind = (forceSection === "dashboard" ? inferredKind : (forceSection as any));
 
     // 1) create DB file row (DO ONCE)
     const created = await apiFetch<FileRow>("/files", {
@@ -1088,7 +1851,7 @@ export default function ProjectsWorkspace() {
             if (row && !row.current_version_id) {
               await uploadToExistingFile(row.id, it.file, dbName);
             } else {
-              await uploadToProject(pid, it.file, "overview", dbName);
+              await uploadToProject(pid, it.file, "dashboard", dbName);
             }
           } catch (e: any) {
             const msg = e?.message || String(e);
@@ -1135,7 +1898,15 @@ export default function ProjectsWorkspace() {
         size_bytes: file.size,
       } as any);
 
-      const uploadKind = (section === "overview" ? inferredKind : (section as any));
+      /* MINIFIX_UPLOAD_KIND_ALLFILES_V1 */
+      const uploadKind =
+        section === "all_files"
+          ? (filesTab === "all" ? inferredKind : (filesTab as any))
+          : inferredKind;
+
+      const sid = selectedScopeId || "main";
+      const prefix = scopePrefixById(sid);
+      const dbName = prefix ? `${prefix}${file.name}` : file.name;
 
       // 1) create DB file row
       const created = await apiFetch<FileRow>("/files", {
@@ -1143,7 +1914,7 @@ export default function ProjectsWorkspace() {
         body: JSON.stringify({
           project_id: selectedProjectId,
           kind: uploadKind,
-          name: file.name,
+          name: dbName,
           mime: file.type || null,
           size_bytes: file.size,
         }),
@@ -1155,7 +1926,7 @@ export default function ProjectsWorkspace() {
         {
           method: "POST",
           body: JSON.stringify({
-            filename: file.name,
+            filename: dbName,
             mime: file.type || "application/octet-stream",
             size_bytes: file.size,
           }),
@@ -1187,7 +1958,8 @@ export default function ProjectsWorkspace() {
         }),
       });
 
-      setSection(uploadKind as any);
+      /* MINIFIX_UPLOAD_DO_NOT_SWITCH_SECTION_V1 */
+      if (section === "all_files") setFilesTab(uploadKind as any);
       await loadFiles(selectedProjectId);
       await loadAll(); // in case the first uploaded image became the project thumbnail
       setUploadErr(null);
@@ -1262,8 +2034,85 @@ export default function ProjectsWorkspace() {
     setSetupMissing(selectedProject.missing_items || "");
     setSetupNotes(selectedProject.inventory_notes || "");
     setSetupMsg(null);
+
+    // Load scopes (rooms) from inventory_state
+    try {
+      const inv = (selectedProject.inventory_state as any) || {};
+      const pack = inv.scopes_v1 || null;
+      const list = Array.isArray(pack?.list) ? pack.list : null;
+
+      let cleaned: Scope[] = [{ id: "main", name: "Overview" }];
+
+      if (list && list.length) {
+        const tmp = list
+          .map((x: any) => ({ id: String(x.id || ""), name: String(x.name || "") }))
+          .filter((x: any) => x.id && x.name);
+
+        // ensure main exists
+        const hasMain = tmp.some((s: any) => String(s.id) === "main");
+        cleaned = hasMain ? tmp : [{ id: "main", name: "Overview" }, ...tmp];
+      }
+
+      setScopes(cleaned);
+    } catch {
+      setScopes([{ id: "main", name: "Overview" }]);
+    }
+
+    setSelectedScopeId("main");
+    setQuoteMsg(null);
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProject) return;
+
+    const inv = (selectedProject.inventory_state as any) || {};
+    const sid = selectedScopeId || "main";
+
+    // Overview: combined view (read-only)
+    if (sid === "main") {
+      const c = computeCombinedQuotationFromInventory(inv);
+      setCombinedQuote(c.totals);
+      setCombinedQuoteRows(c.rows);
+      setCombinedQuoteSections(c.sections || []);
+
+      setQuoteEditing(false);
+      setQuoteMsg(null);
+      return;
+    }
+
+    setCombinedQuote(null);
+    setCombinedQuoteRows([]);
+    setCombinedQuoteSections([]);
+
+    // Prefer per-scope storage
+    const q =
+      inv?.quotations_v2?.by_scope?.[sid] ||
+      null;
+
+    if (q && quoteLoad(q)) {
+      quoteSavedSnapRef.current = JSON.stringify(q);
+      setQuoteEditing(false);
+      setQuoteMsg(null);
+      return;
+    }
+
+    // fresh quotation for this scope (new / not saved yet)
+    const freshSecs = defaultQuotationSections();
+    setQuoteSections(freshSecs);
+    setQuoteCurrency("QAR");
+    setQuoteProfitPct("40");
+    setQuoteCustomerPrice("");
+
+    const fresh = quoteSerializeFrom(freshSecs, "QAR", "40");
+    quoteSavedSnapRef.current = JSON.stringify(fresh);
+
+    setQuoteEditing(true);
+    setQuoteMsg(null);
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProjectId, selectedScopeId]);
 
   async function saveProjectSetup() {
     if (!selectedProjectId) return;
@@ -1509,16 +2358,50 @@ This deletes the file and all its versions.`)
       return nm.includes(needle) || kd.includes(needle) || ex === wantExt;
     };
 
-    if (section === "overview") {
-      return [...files].filter(matches).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    if (section === "dashboard") {
+      // no files on dashboard
+      return [];
     }
 
-    const want = section; // commercial / technical / images / cnc / materials
-    return files
-      .filter((f) => classifySection(f) === want)
-      .filter(matches)
-      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  }, [files, section, fileQ]);
+    if (section === "all_files") {
+      /* MINIFIX_FILES_TAB_ALL_V1 */
+      if (filesTab === "all") {
+        const base = [...files].filter(matches);
+
+        const scoped =
+          (selectedScopeId || "main") === "main"
+            ? base
+            : base.filter((f) => fileScopeIdFromName(f.name) === (selectedScopeId || "main"));
+
+        return scoped.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+      }
+
+      const want = filesTab;
+      const base = files
+        .filter((f) => classifySection(f) === want)
+        .filter(matches);
+
+      const scoped =
+        (selectedScopeId || "main") === "main"
+          ? base
+          : base.filter((f) => fileScopeIdFromName(f.name) === (selectedScopeId || "main"));
+
+      return scoped.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    }
+
+    // fallback (legacy direct section navigation)
+    const want = section;
+    const base = files
+      .filter((f) => classifySection(f) === (want as any))
+      .filter(matches);
+
+    const scoped =
+      (selectedScopeId || "main") === "main"
+        ? base
+        : base.filter((f) => fileScopeIdFromName(f.name) === (selectedScopeId || "main"));
+
+    return scoped.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }, [files, section, fileQ, filesTab, selectedScopeId, scopes]); /* MINIFIX_FILES_TAB_DEP_V1 */
 
   const selectedFile = useMemo(() => {
     return visibleFiles.find((f) => f.id === selectedFileId) || null;
@@ -1531,7 +2414,7 @@ This deletes the file and all its versions.`)
         display: "grid",
         gridTemplateColumns: isMobile
           ? "1fr"
-          : "clamp(420px, 32vw, 680px) clamp(180px, 13vw, 240px) minmax(0, 1fr)",
+          : "clamp(420px, 32vw, 680px) minmax(0, 1fr)",
         gap: 14,
         alignItems: "start",
         width: "100%",
@@ -1894,7 +2777,8 @@ This deletes the file and all its versions.`)
                           onClick={() => {
                             if (suppressClickRef.current) return;
                             setSelectedProjectId(p.id);
-                            setSection("overview");
+                            /* MINIFIX_OVERVIEW_TO_DASHBOARD_V2 */
+                            setSection("dashboard");
                             if (isMobile) setMobileView("sections");
                           }}
                           style={{
@@ -2244,7 +3128,7 @@ This deletes the file and all its versions.`)
       {/* MIDDLE: sections inside project */}
       <div
         style={{
-          display: isMobile && mobileView !== "sections" ? "none" : "block",
+          display: isMobile ? (mobileView !== "sections" ? "none" : "block") : "none",
           position: isMobile ? "relative" : "sticky",
           top: isMobile ? undefined : 12,
 
@@ -2395,6 +3279,47 @@ This deletes the file and all its versions.`)
 
 
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <select
+                  value={selectedScopeId}
+                  onChange={(e) => setSelectedScopeId(e.target.value)}
+                  disabled={!selectedProjectId}
+                  title="Room / scope"
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 12,
+                    border: "1px solid #30363d",
+                    background: "#0b0f17",
+                    color: "#e6edf3",
+                    fontWeight: 900,
+                    opacity: !selectedProjectId ? 0.6 : 1,
+                    cursor: !selectedProjectId ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {(scopes || [{ id: "main", name: "Main" }]).map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  onClick={() => scopeAddPrompt()}
+                  disabled={!selectedProjectId}
+                  title="Add subproject"
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 12,
+                    border: "1px solid #30363d",
+                    background: "#0f1623",
+                    color: "#e6edf3",
+                    fontWeight: 900,
+                    opacity: !selectedProjectId ? 0.6 : 1,
+                    cursor: !selectedProjectId ? "not-allowed" : "pointer",
+                  }}
+                >
+                  + Subproject
+                </button>
+
                 <button
                   onClick={() => renameSelectedProject()}
                   disabled={!selectedProjectId}
@@ -2433,6 +3358,57 @@ This deletes the file and all its versions.`)
 
               {/* Open project button removed (unused) */}
             </div>
+
+            {/* WORKSPACE TABS (tabs-only desktop UX) */}
+            <div
+              style={{
+                marginTop: 12,
+                marginBottom: 14,
+                display: "flex",
+                gap: 6,
+                flexWrap: "nowrap",
+                overflowX: "auto",
+                paddingBottom: 6,
+                borderBottom: "1px solid #30363d",
+
+                /* MINIFIX_WORKSPACE_TABS_STICKY_V1 */
+                position: "sticky",
+                top: 12,
+                zIndex: 20,
+                background: "#0f1623",
+              }}
+            >
+              {[
+                ["dashboard", "Dashboard"],
+                /* MINIFIX_TOP_TAB_FILES_LABEL_V2 */
+                ["all_files", "Files"],
+              ].map(([key, label]) => {
+                const active = section === (key as SectionKey);
+                return (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      setSection(key as SectionKey);
+                      if (isMobile) setMobileView("files");
+                    }}
+                    style={{
+                      padding: "8px 14px",
+                      borderRadius: 999,
+                      border: "1px solid #30363d",
+                      background: active ? "#1f6feb" : "#0b0f17",
+                      color: active ? "#ffffff" : "#e6edf3",
+                      fontWeight: 900,
+                      cursor: "pointer",
+                      whiteSpace: "nowrap",
+                      flex: "0 0 auto",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
             {/* Version history moved into Preview (collapsible) */}
 
             {(filesErr || previewErr || uploadErr) && (
@@ -2441,171 +3417,1260 @@ This deletes the file and all its versions.`)
             </div>
             )}
 
-            {section === "overview" && selectedProject ? (
-              <details style={{ marginTop: 14, border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17" }}>
-                <summary
+            {section === "dashboard" && selectedProject ? (
+              <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
+                {/* MINIFIX_PROJECT_OVERVIEW_HEADER_REMOVED_V1 */}
+
+
+                {/* MINIFIX_OVERVIEW_NAVBAR_V2_START */}
+                <div
                   style={{
-                    padding: 12,
-                    cursor: "pointer",
-                    userSelect: "none",
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
-                    gap: 12,
+                    gap: 10,
+                    flexWrap: "wrap",
                   }}
                 >
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
-                    <div style={{ fontWeight: 950, fontSize: 15 }}>Project Setup</div>
-
-                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", opacity: 0.72, fontSize: 12 }}>
-                      <div style={{ whiteSpace: "nowrap" }}>
-                        Paid {fmtMoney(selectedProject.paid_amount)}/{fmtMoney(selectedProject.total_amount)}
-                      </div>
-                      <div style={{ opacity: 0.6 }}>•</div>
-                      <div style={{ whiteSpace: "nowrap" }}>
-                        Balance {fmtMoney(calcBalance(selectedProject.total_amount, selectedProject.paid_amount))}
-                      </div>
-                      <div style={{ opacity: 0.6 }}>•</div>
-                      <div style={{ whiteSpace: "nowrap" }}>
-                        ETA {fmtDateShort(selectedProject.eta_date)}
-                      </div>
-                    </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 6,
+                      flexWrap: "nowrap",
+                      overflowX: "auto",
+                      paddingBottom: 6,
+                      minWidth: 0,
+                    }}
+                  >
+                    {[
+                      ["dashboard", "Dashboard"],
+                      ["quotation", "Quotation"],
+                      ["items", "Assigned Items"],
+                      ["progress", "Progress"],
+                    ].map(([k, label]) => {
+                      const active = overviewSub === (k as any);
+                      return (
+                        <button
+                          key={k}
+                          onClick={() => setOverviewSub(k as any)}
+                          style={{
+                            padding: "8px 14px",
+                            borderRadius: 999,
+                            border: "1px solid #30363d",
+                            background: active ? "#1f6feb" : "#0b0f17",
+                            color: active ? "#ffffff" : "#e6edf3",
+                            fontWeight: 900,
+                            cursor: "pointer",
+                            whiteSpace: "nowrap",
+                            flex: "0 0 auto",
+                          }}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
                   </div>
 
-                  <div style={{ opacity: 0.7, fontSize: 14 }}>▾</div>
-                </summary>
+                  {/* MINIFIX_OVERVIEW_NAVBAR_ACTIONS_REMOVED_V1 */}
+                </div>
+                {/* MINIFIX_OVERVIEW_NAVBAR_V2_END */}
 
-                <div style={{ padding: 12, paddingTop: 0 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <div style={{ opacity: 0.7, fontSize: 12 }}>Edit payments, delivery & inventory then Save.</div>
-
-                    <button
-                      onClick={() => saveProjectSetup()}
-                      disabled={setupBusy}
-                      style={{
-                        padding: "8px 12px",
-                        borderRadius: 12,
-                        border: "1px solid #30363d",
-                        background: setupBusy ? "#111827" : "#1f6feb",
-                        color: "#e6edf3",
-                        fontWeight: 900,
-                        cursor: setupBusy ? "not-allowed" : "pointer",
-                        opacity: setupBusy ? 0.7 : 1,
-                      }}
-                    >
-                      {setupBusy ? "Saving..." : "Save"}
-                    </button>
-                  </div>
-
-                  {setupMsg ? (
-                    <div style={{ marginTop: 10, opacity: setupMsg === "Saved." ? 0.75 : 1, color: setupMsg === "Saved." ? "#7ee787" : "#ff7b72" }}>
-                      {setupMsg}
-                    </div>
-                  ) : null}
-
-                  <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-                    {/* Payments */}
-                    <div style={{ border: "1px solid #30363d", borderRadius: 12, background: "#0f1623", padding: 12 }}>
-                      <div style={{ fontWeight: 900, marginBottom: 10 }}>Payments</div>
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <label style={{ fontSize: 12, opacity: 0.75 }}>Total (QAR)</label>
-                        <input
-                          value={setupTotal}
-                          onChange={(e) => setSetupTotal(e.target.value)}
-                          placeholder="e.g. 5700"
-                          style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
-                        />
-
-                        <label style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Paid (QAR)</label>
-                        <input
-                          value={setupPaid}
-                          onChange={(e) => setSetupPaid(e.target.value)}
-                          placeholder="e.g. 2850"
-                          style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
-                        />
-
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8, fontSize: 12, opacity: 0.85 }}>
-                          <div>Balance</div>
-                          <div style={{ fontWeight: 900 }}>
-                            {fmtMoney(calcBalance(setupTotal === "" ? null : Number(setupTotal), setupPaid === "" ? null : Number(setupPaid)))}
+                {/* DASHBOARD */}
+                {overviewSub === "dashboard" ? (
+                  <div style={{ display: "grid", gap: 12 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr 1fr", gap: 12 }}>
+                      {/* Finance */}
+                      <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minWidth: 0 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+                          <div style={{ fontWeight: 950 }}>Financials</div>
+                          <div style={{ opacity: 0.7, fontSize: 12 }}>QAR</div>
+                        </div>
+                        <div style={{ marginTop: 10, display: "grid", gap: 8, fontSize: 13 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                            <div style={{ opacity: 0.75 }}>Total</div>
+                            <div style={{ fontWeight: 900 }}>{fmtMoney(selectedProject.total_amount)}</div>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                            <div style={{ opacity: 0.75 }}>Paid</div>
+                            <div style={{ fontWeight: 900 }}>{fmtMoney(selectedProject.paid_amount)}</div>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                            <div style={{ opacity: 0.75 }}>Balance</div>
+                            <div style={{ fontWeight: 900 }}>{fmtMoney(calcBalance(selectedProject.total_amount, selectedProject.paid_amount))}</div>
                           </div>
                         </div>
                       </div>
-                    </div>
 
-                    {/* Delivery */}
-                    <div style={{ border: "1px solid #30363d", borderRadius: 12, background: "#0f1623", padding: 12 }}>
-                      <div style={{ fontWeight: 900, marginBottom: 10 }}>Delivery</div>
+                      {/* Delivery */}
+                      <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minWidth: 0 }}>
+                        <div style={{ fontWeight: 950 }}>Delivery Window</div>
+                        <div style={{ marginTop: 10, display: "grid", gap: 8, fontSize: 13 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                            <div style={{ opacity: 0.75 }}>Start</div>
+                            <div style={{ fontWeight: 900 }}>{selectedProject.payment_date ? fmtDateShort(selectedProject.payment_date) : "-"}</div>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                            <div style={{ opacity: 0.75 }}>Contract (days)</div>
+                            <div style={{ fontWeight: 900 }}>{selectedProject.max_days_to_finish ?? "-"}</div>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                            <div style={{ opacity: 0.75 }}>Max ETA</div>
+                            <div style={{ fontWeight: 900 }}>{fmtDateShort(selectedProject.eta_date)}</div>
+                          </div>
+                          <div style={{ marginTop: 6, paddingTop: 8, borderTop: "1px dashed #30363d", fontSize: 12, opacity: 0.75 }}>
+                            Min/Max dates will be computed from contract fields once wired.
+                          </div>
+                        </div>
+                      </div>
 
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <label style={{ fontSize: 12, opacity: 0.75 }}>Payment date</label>
-                        <input
-                          type="date"
-                          value={setupPaymentDate}
-                          onChange={(e) => setSetupPaymentDate(e.target.value)}
-                          style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
-                        />
+                      {/* Progress Snapshot */}
+                      <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minWidth: 0 }}>
+                        <div style={{ fontWeight: 950 }}>Progress Snapshot</div>
+                        <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, opacity: 0.85 }}>
+                            <div>Phase</div>
+                            <div style={{ fontWeight: 900 }}>Design → Production</div>
+                          </div>
+                          <div style={{ height: 10, borderRadius: 999, background: "#0f1623", border: "1px solid #30363d", overflow: "hidden" }}>
+                            <div style={{ width: "38%", height: "100%", background: "#1f6feb" }} />
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, opacity: 0.85 }}>
+                            <div>38% (UI placeholder)</div>
+                            <div>Latest: <span style={{ fontWeight: 900 }}>—</span></div>
+                          </div>
+                          <button
+                            onClick={() => setOverviewSub("progress")}
+                            style={{
+                              padding: "8px 10px",
+                              borderRadius: 12,
+                              border: "1px solid #30363d",
+                              background: "#0f1623",
+                              color: "#e6edf3",
+                              fontWeight: 900,
+                              cursor: "pointer",
+                            }}
+                          >
+                            View team updates
+                          </button>
 
-                        <label style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Max days to deliver</label>
-                        <input
-                          value={setupMaxDays}
-                          onChange={(e) => setSetupMaxDays(e.target.value)}
-                          placeholder="e.g. 16"
-                          style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
-                        />
+                        </div>
+                      </div>
 
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8, fontSize: 12, opacity: 0.85 }}>
-                          <div>ETA (skip Fridays)</div>
-                          <div style={{ fontWeight: 900 }}>{fmtDateShort(selectedProject.eta_date)}</div>
+                      {/* Items Snapshot */}
+                      <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minWidth: 0 }}>
+                        <div style={{ fontWeight: 950 }}>Assigned Items</div>
+                        <div style={{ marginTop: 10, display: "grid", gap: 8, fontSize: 13 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                            <div style={{ opacity: 0.75 }}>Missing lines</div>
+                            <div style={{ fontWeight: 900 }}>
+                              {(() => {
+                                const s = String(selectedProject.missing_items || "").trim();
+                                if (!s) return "0";
+                                return String(s.split("\n").map((x) => x.trim()).filter(Boolean).length);
+                              })()}
+                            </div>
+                          </div>
+                          <div style={{ marginTop: 6, paddingTop: 8, borderTop: "1px dashed #30363d", fontSize: 12, opacity: 0.75 }}>
+                            Full assignment tracking will live in Items tab.
+                          </div>
+                          <button
+                             onClick={() => setOverviewSub("items")}
+
+                            style={{
+                              padding: "8px 10px",
+                              borderRadius: 12,
+                              border: "1px solid #30363d",
+                              background: "#0f1623",
+                              color: "#e6edf3",
+                              fontWeight: 900,
+                              cursor: "pointer",
+                            }}
+                          >
+                            Assigned Items
+                          </button>
                         </div>
                       </div>
                     </div>
 
-                    {/* Inventory */}
-                    <div style={{ border: "1px solid #30363d", borderRadius: 12, background: "#0f1623", padding: 12 }}>
-                      <div style={{ fontWeight: 900, marginBottom: 10 }}>Inventory</div>
-
-                      <div style={{ display: "grid", gap: 8 }}>
-                        {[
-                          ["bom_prepared", "BOM prepared"],
-                          ["wood_received", "Wood received"],
-                          ["hardware_received", "Hardware received"],
-                          ["ready_for_cutting", "Ready for cutting"],
-                        ].map(([k, label]) => (
-                          <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, opacity: 0.9 }}>
-                            <input
-                              type="checkbox"
-                              checked={!!setupInv?.[k]}
-                              onChange={(e) => setSetupInv((p) => ({ ...(p || {}), [k]: e.target.checked }))}
-                            />
-                            {label}
-                          </label>
-                        ))}
-
-                        <label style={{ fontSize: 12, opacity: 0.75, marginTop: 8 }}>Missing items (one per line)</label>
-                        <textarea
-                          value={setupMissing}
-                          onChange={(e) => setSetupMissing(e.target.value)}
-                          rows={3}
-                          style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", resize: "vertical" }}
-                        />
-
-                        <label style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Notes</label>
-                        <textarea
-                          value={setupNotes}
-                          onChange={(e) => setSetupNotes(e.target.value)}
-                          rows={2}
-                          style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", resize: "vertical" }}
-                        />
+                    {/* Activity feed (placeholder UI) */}
+                    <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12 }}>
+                      <div style={{ fontWeight: 950, marginBottom: 8 }}>Latest Activity</div>
+                      <div style={{ display: "grid", gap: 8, fontSize: 12, opacity: 0.88 }}>
+                        <div>• Update feed will appear here (photos, issues, approvals).</div>
+                        <div>• Team entries will be auditable and time-stamped.</div>
+                        <div>• We’ll wire this to backend in the Progress tab.</div>
                       </div>
                     </div>
                   </div>
-                </div>
-              </details>
+                ) : null}
+
+                {/* QUOTATION */}
+                {overviewSub === "quotation" ? (
+                  <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 14 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 950, fontSize: 15 }}>Quotation Calculator</div>
+                        <div style={{ opacity: 0.75, fontSize: 12, marginTop: 4, lineHeight: 1.35 }}>
+                          Build costs by sections → totals + profit → export quotation / invoice / contract (later).
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center" }}>
+                        {!quoteEditing ? (
+                          <button
+                            disabled={selectedScopeId === "main"}
+                            onClick={() => { if (selectedScopeId !== "main") { setQuoteEditing(true); setQuoteMsg(null); } }}
+                            style={{
+                              padding: "8px 12px",
+                              borderRadius: 12,
+                              border: "1px solid #30363d",
+                              background: "#1f6feb",
+                              color: "#ffffff",
+                              fontWeight: 900,
+                              cursor: selectedScopeId === "main" ? "not-allowed" : "pointer",
+                              opacity: selectedScopeId === "main" ? 0.6 : 1,
+                            }}
+                          >
+                            Edit
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => quoteSave()}
+                              disabled={quoteBusy}
+                              style={{
+                                padding: "8px 12px",
+                                borderRadius: 12,
+                                border: "1px solid #30363d",
+                                background: quoteBusy ? "#111827" : "#1f6feb",
+                                color: "#ffffff",
+                                fontWeight: 900,
+                                cursor: quoteBusy ? "not-allowed" : "pointer",
+                                opacity: quoteBusy ? 0.7 : 1,
+                              }}
+                            >
+                              {quoteBusy ? "Saving..." : "Save"}
+                            </button>
+
+                            <button
+                              onClick={() => quoteCancelEdits()}
+                              disabled={quoteBusy}
+                              style={{
+                                padding: "8px 12px",
+                                borderRadius: 12,
+                                border: "1px solid #30363d",
+                                background: "#0f1623",
+                                color: "#e6edf3",
+                                fontWeight: 900,
+                                cursor: quoteBusy ? "not-allowed" : "pointer",
+                                opacity: quoteBusy ? 0.7 : 1,
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        )}
+
+                        <button
+                          disabled
+                          title="UI only (backend later)"
+                          style={{
+                            padding: "8px 12px",
+                            borderRadius: 12,
+                            border: "1px solid #30363d",
+                            background: "#0f1623",
+                            color: "rgba(230,237,243,0.75)",
+                            fontWeight: 900,
+                            cursor: "not-allowed",
+                          }}
+                        >
+                          Export PDF
+                        </button>
+                        <button
+                          disabled
+                          title="UI only (backend later)"
+                          style={{
+                            padding: "8px 12px",
+                            borderRadius: 12,
+                            border: "1px solid #30363d",
+                            background: "#0f1623",
+                            color: "rgba(230,237,243,0.75)",
+                            fontWeight: 900,
+                            cursor: "not-allowed",
+                          }}
+                        >
+                          Convert to Invoice
+                        </button>
+                        <button
+                          disabled
+                          title="UI only (backend later)"
+                          style={{
+                            padding: "8px 12px",
+                            borderRadius: 12,
+                            border: "1px solid #30363d",
+                            background: "#0f1623",
+                            color: "rgba(230,237,243,0.75)",
+                            fontWeight: 900,
+                            cursor: "not-allowed",
+                          }}
+                        >
+                          Generate Contract
+                        </button>
+
+                        {quoteMsg ? (
+                          <div style={{ marginLeft: 8, fontSize: 12, opacity: quoteMsg === "Saved." ? 0.75 : 1, color: quoteMsg === "Saved." ? "#7ee787" : "#ff7b72" }}>
+                            {quoteMsg}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {selectedScopeId === "main" ? (
+                      <div
+                        style={{
+                          marginTop: 12,
+                          border: "1px solid #30363d",
+                          borderRadius: 14,
+                          background: "#0f1623",
+                          padding: 12,
+                        }}
+                      >
+                        <div style={{ fontWeight: 950, fontSize: 14 }}>Overview (Combined)</div>
+                        <div style={{ opacity: 0.75, fontSize: 12, marginTop: 6, lineHeight: 1.35 }}>
+                          This is a combined view of all subprojects. Select a subproject to edit its quotation.
+                        </div>
+
+                        {combinedQuote ? (
+                          <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                              <div style={{ opacity: 0.75 }}>Total cost</div>
+                              <div style={{ fontWeight: 950 }}>{quoteCurrency} {qMoney(combinedQuote.cost)}</div>
+                            </div>
+
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                              <div style={{ opacity: 0.75 }}>Profit (computed)</div>
+                              <div style={{ fontWeight: 950 }}>{quoteCurrency} {qMoney(combinedQuote.profit)}</div>
+                            </div>
+
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                              <div style={{ opacity: 0.85, fontWeight: 950 }}>Final total</div>
+                              <div style={{ fontWeight: 950 }}>{quoteCurrency} {qMoney(combinedQuote.final)}</div>
+                            </div>
+
+                            <div style={{ marginTop: 6, paddingTop: 10, borderTop: "1px dashed #30363d" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                                <div style={{ opacity: 0.75 }}>Customer price (sum)</div>
+                                <div style={{ fontWeight: 950 }}>{quoteCurrency} {qMoney(combinedQuote.customer_price)}</div>
+                              </div>
+
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8 }}>
+                                <div style={{ opacity: 0.75 }}>Profit (customer − cost)</div>
+                                <div style={{ fontWeight: 950 }}>{quoteCurrency} {qMoney(combinedQuote.customer_profit)}</div>
+                              </div>
+
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8 }}>
+                                <div style={{ opacity: 0.75 }}>Profit % (on cost)</div>
+                                <div style={{ fontWeight: 950 }}>{combinedQuote.customer_profit_pct.toFixed(2)}%</div>
+                              </div>
+                            </div>
+
+                            {combinedQuoteRows.length ? (
+                              <div style={{ marginTop: 12, borderTop: "1px dashed #30363d", paddingTop: 10 }}>
+                                <div style={{ fontWeight: 900, marginBottom: 8 }}>By subproject</div>
+                                <div style={{ display: "grid", gap: 8 }}>
+                                  {combinedQuoteRows.map((r) => (
+                                    <div
+                                      key={r.scope_id}
+                                      style={{
+                                        display: "flex",
+                                        justifyContent: "space-between",
+                                        gap: 10,
+                                        padding: "8px 10px",
+                                        borderRadius: 12,
+                                        border: "1px solid #30363d",
+                                        background: "#0b0f17",
+                                      }}
+                                    >
+                                      <div style={{ fontWeight: 900, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                        {r.scope_name}
+                                      </div>
+                                      <div style={{ display: "flex", gap: 12, alignItems: "center", whiteSpace: "nowrap", fontSize: 12, opacity: 0.9 }}>
+                                        <span>Cost {quoteCurrency} {qMoney(r.cost)}</span>
+                                        <span>Final {quoteCurrency} {qMoney(r.final)}</span>
+                                        <span>Customer {quoteCurrency} {qMoney(r.customer_price)}</span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {combinedQuoteSections.length ? (
+                              <div style={{ marginTop: 12, borderTop: "1px dashed #30363d", paddingTop: 10 }}>
+                                <div style={{ fontWeight: 900, marginBottom: 8 }}>Combined items (all subprojects)</div>
+
+                                {/* Total labor highlight */}
+                                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 10, fontSize: 13 }}>
+                                  <div style={{ opacity: 0.75 }}>Total labor charges</div>
+                                  <div style={{ fontWeight: 950 }}>
+                                    {quoteCurrency} {qMoney((combinedQuoteSections.find((s) => s.id === "labor_cost")?.subtotal || 0) as any)}
+                                  </div>
+                                </div>
+
+                                <div style={{ display: "grid", gap: 10 }}>
+                                  {combinedQuoteSections.map((sec) => (
+                                    <details
+                                      key={sec.id}
+                                      open={sec.id === "labor_cost"}
+                                      style={{
+                                        border: "1px solid #30363d",
+                                        borderRadius: 14,
+                                        background: "#0b0f17",
+                                        overflow: "hidden",
+                                      }}
+                                    >
+                                      <summary
+                                        style={{
+                                          cursor: "pointer",
+                                          padding: "10px 12px",
+                                          display: "flex",
+                                          justifyContent: "space-between",
+                                          gap: 10,
+                                          userSelect: "none",
+                                        }}
+                                      >
+                                        <div style={{ fontWeight: 900 }}>{sec.title}</div>
+                                        <div style={{ opacity: 0.8, fontSize: 12, whiteSpace: "nowrap" }}>
+                                          {quoteCurrency} {qMoney(sec.subtotal)} • {sec.lines.length} lines
+                                        </div>
+                                      </summary>
+
+                                      <div style={{ padding: 10, display: "grid", gap: 8 }}>
+                                        {sec.lines.map((ln: any, idx: number) => (
+                                          <div
+                                            key={`${ln.__scope_id || "x"}-${ln.id || idx}`}
+                                            style={{
+                                              border: "1px solid #30363d",
+                                              borderRadius: 12,
+                                              background: "#0f1623",
+                                              padding: "10px 10px",
+                                              display: "grid",
+                                              gap: 6,
+                                            }}
+                                          >
+                                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                                              <div style={{ fontWeight: 900, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                                {ln.type || "—"}
+                                              </div>
+                                              <div style={{ opacity: 0.8, fontSize: 12, whiteSpace: "nowrap" }}>
+                                                {ln.__scope_label || "—"}
+                                              </div>
+                                            </div>
+
+                                            {ln.description ? (
+                                              <div style={{ opacity: 0.85, fontSize: 12, lineHeight: 1.3 }}>
+                                                {ln.description}
+                                              </div>
+                                            ) : null}
+
+                                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, opacity: 0.9, flexWrap: "wrap" }}>
+                                              {String(ln.mode || "normal") === "labor" ? (
+                                                <div>
+                                                  Man-hours {qNum((ln as any).__man_hours_sum)} × Rate {qNum(ln.unit_price)}
+                                                </div>
+                                              ) : (
+                                                <div>
+                                                  Qty {qNum((ln as any).__qty_sum)} × Unit {qNum(ln.unit_price)}
+                                                </div>
+                                              )}
+
+                                              <div style={{ fontWeight: 900, whiteSpace: "nowrap" }}>
+                                                {quoteCurrency} {qMoney(qNum((ln as any).__amount))}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </details>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div style={{ marginTop: 12, opacity: 0.75 }}>No subproject quotations yet.</div>
+                        )}
+                      </div>
+                    ) : (
+                    <fieldset
+                      disabled={!quoteEditing}
+                      style={{
+                        border: 0,
+                        padding: 0,
+                        margin: 0,
+                        minWidth: 0,
+                        opacity: quoteEditing ? 1 : 0.92,
+                      }}
+                    >
+                      <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr", gap: 12, alignItems: "start" /* MINIFIX_QUOTE_SINGLE_COLUMN_V1 */ }}>
+                        {/* LEFT: sections */}
+                        <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+                        {quoteSections.map((sec) => {
+                          const subtotal = quoteSectionSubtotal(sec);
+                          return (
+                            <div key={sec.id} style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0f1623", overflow: "visible" /* MINIFIX_QUOTE_SECTION_OVERFLOW_V1 */ }}>
+                              <div
+                                style={{
+                                  padding: 12,
+                                  display: "grid",
+                                  gap: 10,
+                                  alignItems: "center",
+
+                                  /* MINIFIX_SECTION_HEADER_NO_OVERFLOW_V1 */
+                                  width: "100%",
+                                  minWidth: 0,
+                                  gridTemplateColumns: isMobile ? "1fr" : "minmax(0, 1fr) auto",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    fontWeight: 950,
+                                    fontSize: 13,
+                                    letterSpacing: 0.2,
+                                    minWidth: 0,
+                                  }}
+                                >
+                                  {sec.title}
+                                </div>
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 10,
+                                    flexWrap: "wrap",
+                                    rowGap: 10,
+
+                                    /* MINIFIX_SECTION_HEADER_RIGHT_SAFE_V2 */
+                                    justifyContent: "flex-end",
+                                    justifySelf: "end",
+                                    minWidth: 0,
+                                    maxWidth: "100%",
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      opacity: 0.75,
+                                      fontSize: 12,
+                                      display: "flex",
+                                      gap: 10,
+                                      alignItems: "center",
+                                      flexWrap: "wrap",
+                                      justifyContent: "flex-end",
+                                      minWidth: 0,
+                                    }}
+                                  >
+                                    <span>
+                                      Subtotal:{" "}
+                                      <span style={{ fontWeight: 950 }}>
+                                        {quoteCurrency} {qMoney(subtotal)}
+                                      </span>
+                                    </span>
+
+                                    <span
+                                      style={{
+                                        padding: "3px 8px",
+                                        borderRadius: 999,
+                                        border: "1px solid rgba(255,255,255,0.12)",
+                                        background: "rgba(0,0,0,0.10)",
+                                        fontWeight: 900,
+                                        whiteSpace: "nowrap",
+                                      }}
+                                      title="Profit rule for this section"
+                                    >
+                                      {(() => {
+                                        const m = sec.profit_mode || "global";
+                                        if (m === "none") return "Profit: 0%";
+                                        if (m === "custom") return `Profit: ${qNum(sec.profit_pct)}%`;
+                                        return `Profit: ${qNum(quoteProfitPct)}%`;
+                                      })()}
+                                    </span>
+
+                                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                                      <button
+                                        disabled={!quoteEditing}
+                                        onClick={() => quoteUpdateSection(sec.id, { profit_mode: "global" })}
+                                        style={{
+                                          padding: "6px 10px",
+                                          borderRadius: 999,
+                                          border: "1px solid #30363d",
+                                          background: (sec.profit_mode || "global") === "global" ? "#111827" : "#0b0f17",
+                                          color: "#e6edf3",
+                                          fontWeight: 900,
+                                          cursor: !quoteEditing ? "not-allowed" : "pointer",
+                                          opacity: !quoteEditing ? 0.55 : 1,
+                                        }}
+                                      >
+                                        Global
+                                      </button>
+
+                                      <button
+                                        disabled={!quoteEditing}
+                                        onClick={() => quoteUpdateSection(sec.id, { profit_mode: "none" })}
+                                        style={{
+                                          padding: "6px 10px",
+                                          borderRadius: 999,
+                                          border: "1px solid #30363d",
+                                          background: (sec.profit_mode || "global") === "none" ? "#111827" : "#0b0f17",
+                                          color: "#e6edf3",
+                                          fontWeight: 900,
+                                          cursor: !quoteEditing ? "not-allowed" : "pointer",
+                                          opacity: !quoteEditing ? 0.55 : 1,
+                                        }}
+                                      >
+                                        0%
+                                      </button>
+
+                                      <button
+                                        disabled={!quoteEditing}
+                                        onClick={() => quoteUpdateSection(sec.id, { profit_mode: "custom", profit_pct: sec.profit_pct || "" })}
+                                        style={{
+                                          padding: "6px 10px",
+                                          borderRadius: 999,
+                                          border: "1px solid #30363d",
+                                          background: (sec.profit_mode || "global") === "custom" ? "#111827" : "#0b0f17",
+                                          color: "#e6edf3",
+                                          fontWeight: 900,
+                                          cursor: !quoteEditing ? "not-allowed" : "pointer",
+                                          opacity: !quoteEditing ? 0.55 : 1,
+                                        }}
+                                      >
+                                        Custom
+                                      </button>
+
+                                      {(sec.profit_mode || "global") === "custom" ? (
+                                        <input
+                                          disabled={!quoteEditing}
+                                          value={sec.profit_pct || ""}
+                                          onChange={(e) => quoteUpdateSection(sec.id, { profit_pct: e.target.value })}
+                                          inputMode="decimal"
+                                          placeholder="%"
+                                          style={{
+                                            width: 72,
+                                            padding: "6px 10px",
+                                            borderRadius: 999,
+                                            border: "1px solid #30363d",
+                                            background: "#0b0f17",
+                                            color: "#e6edf3",
+                                            textAlign: "right",
+                                            fontWeight: 900,
+                                            opacity: !quoteEditing ? 0.6 : 1,
+                                          }}
+                                        />
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                  {sec.id === "cabinet_accessories" ? (
+                                    <button
+                                      disabled={!quoteEditing}
+                                      onClick={() => quoteAddServiceFee(sec.id)}
+                                      style={{
+                                        padding: "6px 10px",
+                                        borderRadius: 12,
+                                        border: "1px dashed rgba(255,255,255,0.18)",
+                                        background: "transparent",
+                                        color: "rgba(230,237,243,0.92)",
+                                        fontWeight: 900,
+                                        cursor: "pointer",
+                                        whiteSpace: "nowrap",
+                                        flex: "0 0 auto",
+                                        maxWidth: "100%",
+                                      }}
+                                    >
+                                      + Service fee
+                                    </button>
+                                  ) : null}
+
+                                  <button
+                                    disabled={!quoteEditing}
+                                    onClick={() => quoteAddLine(sec.id)}
+                                    style={{
+                                      padding: "6px 10px",
+                                      borderRadius: 12,
+                                      border: "1px solid #30363d",
+                                      background: "#0b0f17",
+                                      color: "#e6edf3",
+                                      fontWeight: 900,
+                                      cursor: "pointer",
+
+                                      /* MINIFIX_ADDLINE_NO_OVERFLOW_V2 */
+                                      whiteSpace: "nowrap",
+                                      flex: "0 0 auto",
+                                      maxWidth: "100%",
+                                    }}
+                                  >
+                                    + Add line
+                                  </button>
+
+                                </div>
+                              </div>
+
+                              <div style={{ padding: 12, paddingTop: 0 }}>
+                                <div
+                                  style={{
+                                    display: isMobile ? "none" : "grid",
+                                    gridTemplateColumns: "minmax(0, 1.1fr) minmax(0, 1.4fr) minmax(90px, 0.55fr) minmax(90px, 0.55fr) minmax(120px, 0.75fr) 44px", /* MINIFIX_QTY_UNIT_MINWIDTH_V2 */
+                                    gap: 8,
+                                    fontSize: 12,
+                                    opacity: 0.75,
+                                    fontWeight: 900,
+                                    padding: "10px 10px",
+                                    borderRadius: 12,
+                                    border: "1px solid #30363d",
+                                    background: "#0b0f17",
+                                  }}
+                                >
+                                  <div>Type</div>
+                                  <div>Description</div>
+                                  <div style={{ textAlign: "right" }}>{sec.id === "labor_cost" ? "Workers" : "Qty"}</div>
+                                  <div style={{ textAlign: "right" }}>{sec.id === "labor_cost" ? "Hours" : "Unit price"}</div>
+                                  <div style={{ textAlign: "right" }}>Amount</div>
+                                  <div></div>
+                                </div>
+
+                                <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
+                                  {/* MINIFIX_QUOTE_ROW_RENDER_SAFE_V1_START */}
+                                  {sec.lines.map((ln) => {
+                                    const amt = qLineAmount(ln);
+
+                                    return (
+                                      <div
+                                        key={ln.id}
+                                        style={{
+                                          padding: "10px 10px",
+                                          borderRadius: 12,
+                                          border: "1px solid #30363d",
+                                          background: "#0b0f17",
+                                        }}
+                                      >
+                                        <div
+                                          style={{
+                                            display: "grid",
+                                            gap: 8,
+                                            alignItems: "center",
+
+                                            /* MINIFIX_ROW_GRID_SHRINK_V1 */
+                                            width: "100%",
+                                            minWidth: 0,
+                                            gridTemplateColumns: isMobile
+                                              ? "1fr"
+                                              : "minmax(0, 1.1fr) minmax(0, 1.4fr) minmax(90px, 0.55fr) minmax(90px, 0.55fr) minmax(120px, 0.75fr) 44px", /* MINIFIX_QTY_UNIT_MINWIDTH_V2 */
+                                          }}
+                                        >
+                                          {/* Type */}
+                                          {ln.type_kind === "custom" ? (
+                                            <input
+                                              value={ln.type}
+                                              onChange={(e) => quoteUpdateLine(sec.id, ln.id, { type: e.target.value })}
+                                              placeholder="Custom type..."
+                                              style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3", fontWeight: 900, width: "100%", minWidth: 0, boxSizing: "border-box" }}
+                                            />
+                                          ) : (
+                                            <select
+                                              value={ln.type || ""}
+                                              onChange={(e) => {
+                                                const v = e.target.value;
+                                                if (v === "__custom__") {
+                                                  quoteUpdateLine(sec.id, ln.id, { type_kind: "custom", type: "", unit_price: "" });
+                                                } else {
+                                                  const cat = QUOTE_CATALOG_BY_SECTION[sec.id] || [];
+                                                  const hit = cat.find((it) => it.label === v) || null;
+                                                  quoteUpdateLine(sec.id, ln.id, {
+                                                    type_kind: "select",
+                                                    type: v,
+                                                    unit_price: hit ? String(hit.price) : ln.unit_price,
+                                                  });
+                                                }
+
+                                              }}
+                                              style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3", fontWeight: 900, width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }} /* MINIFIX_SELECT_SHRINK_V1 */
+                                            >
+                                              <option value="">Select…</option>
+                                              {(QUOTE_CATALOG_BY_SECTION[sec.id] || []).map((it) => (
+                                                <option key={it.label} value={it.label}>{it.label}</option>
+                                              ))}
+                                              <option value="__custom__">Custom…</option>
+                                            </select>
+                                          )}
+
+                                          {/* Description */}
+                                          <input
+                                            value={ln.description}
+                                            onChange={(e) => quoteUpdateLine(sec.id, ln.id, { description: e.target.value })}
+                                            placeholder="Notes / size / code"
+                                            style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3", width: "100%", minWidth: 0, boxSizing: "border-box" }}
+                                          />
+
+                                          {/* Vendor removed (not mandatory) */}
+
+                                          {/* Qty / Workers */}
+                                          {ln.mode === "labor" ? (
+                                            <input
+                                              value={ln.workers}
+                                              onChange={(e) => quoteUpdateLine(sec.id, ln.id, { workers: e.target.value })}
+                                              placeholder="Workers"
+                                              inputMode="decimal"
+                                              style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3", textAlign: "right", width: "100%", minWidth: 0, boxSizing: "border-box" }}
+                                            />
+                                          ) : (
+                                            <input
+                                              value={ln.qty}
+                                              onChange={(e) => quoteUpdateLine(sec.id, ln.id, { qty: e.target.value })}
+                                              placeholder="Qty"
+                                              inputMode="decimal"
+                                              style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3", textAlign: "right", width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }} /* MINIFIX_INPUT_SHRINK_V2 */
+                                            />
+                                          )}
+
+                                          {/* Hours / Unit */}
+                                          {ln.mode === "labor" ? (
+                                            <input
+                                              value={ln.hours}
+                                              onChange={(e) => quoteUpdateLine(sec.id, ln.id, { hours: e.target.value })}
+                                              placeholder="Hours"
+                                              inputMode="decimal"
+                                              style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3", textAlign: "right", width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }} /* MINIFIX_INPUT_SHRINK_V2 */
+                                            />
+                                          ) : (
+                                            <input
+                                              value={ln.unit_price}
+                                              onChange={(e) => quoteUpdateLine(sec.id, ln.id, { unit_price: e.target.value })}
+                                              placeholder="Unit price"
+                                              inputMode="decimal"
+                                              style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3", textAlign: "right", width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }} /* MINIFIX_INPUT_SHRINK_V2 */
+                                            />
+                                          )}
+                                          {/* MINIFIX_REMOVED_STRAY_UNIT_PRICE_FRAGMENT_V1 */}
+
+                                          {/* Amount */}
+                                          <div
+                                            style={{
+                                              display: "flex",
+                                              justifyContent: "space-between",
+                                              alignItems: "center",
+                                              gap: 8,
+                                              minWidth: 0,
+                                            }}
+                                          >
+                                            <button
+                                              onClick={() => {
+                                                const cur = (ln as any).profit_mode || "inherit";
+                                                const next = cur === "none" ? "inherit" : "none";
+                                                quoteUpdateLine(sec.id, ln.id, { profit_mode: next as any });
+                                              }}
+                                              title={(ln as any).profit_mode === "none" ? "Pass-through (0% profit)" : "Profit applies"}
+                                              style={{
+                                                padding: "6px 10px",
+                                                borderRadius: 999,
+                                                border: "1px solid #30363d",
+                                                background: (ln as any).profit_mode === "none" ? "rgba(127,29,29,0.35)" : "#0f1623",
+                                                color: "#e6edf3",
+                                                fontWeight: 900,
+                                                cursor: "pointer",
+                                                whiteSpace: "nowrap",
+                                                flex: "0 0 auto",
+                                              }}
+                                            >
+                                              {(ln as any).profit_mode === "none" ? "Pass" : "Profit"}
+                                            </button>
+
+                                            <div style={{ textAlign: "right", fontWeight: 950, flex: "1 1 auto" }}>
+                                              {quoteCurrency} {qMoney(amt)}
+                                            </div>
+                                          </div>
+
+                                          {/* Remove */}
+                                          <button
+                                            onClick={() => quoteRemoveLine(sec.id, ln.id)}
+                                            title="Remove line"
+                                            style={{
+                                              width: 34,
+                                              height: 34,
+                                              borderRadius: 12,
+                                              border: "1px solid #30363d",
+                                              background: "#3b0a0a",
+                                              color: "#ffd7d7",
+                                              fontWeight: 950,
+                                              cursor: "pointer",
+                                              lineHeight: 1,
+
+                                              justifySelf: isMobile ? "end" : undefined,
+                                            }}
+                                          >
+                                            ×
+                                          </button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                  {/* MINIFIX_QUOTE_ROW_RENDER_SAFE_V1_END */}
+                                </div>
+
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* RIGHT: totals */}
+                      <div style={{ display: "grid", gap: 12, minWidth: 0, alignSelf: "start" /* MINIFIX_TOTALS_NOT_STICKY_V2 */ }}>
+                        <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0f1623", padding: 12 }}>
+                          <div style={{ fontWeight: 950 }}>Totals</div>
+
+                          <div style={{ marginTop: 10, display: "grid", gap: 10, fontSize: 13 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                              <div style={{ opacity: 0.75 }}>Total cost</div>
+                              <div style={{ fontWeight: 950 }}>{quoteCurrency} {qMoney(quoteCostTotalAll)}</div>
+                            </div>
+
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                              <div style={{ opacity: 0.75 }}>Profit base</div>
+                              <div style={{ fontWeight: 950 }}>{quoteCurrency} {qMoney(quoteProfitBaseTotal)}</div>
+                            </div>
+
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                              <div style={{ opacity: 0.75 }}>Pass-through</div>
+                              <div style={{ fontWeight: 950 }}>{quoteCurrency} {qMoney(quotePassThroughTotal)}</div>
+                            </div>
+
+
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                              <div style={{ opacity: 0.75 }}>Profit % (global)</div>
+                              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                <input
+                                  value={quoteProfitPct}
+                                  onChange={(e) => setQuoteProfitPct(e.target.value)}
+                                  inputMode="decimal"
+                                  style={{
+                                    width: 90,
+                                    padding: "8px 10px",
+                                    borderRadius: 12,
+                                    border: "1px solid #30363d",
+                                    background: "#0b0f17",
+                                    color: "#e6edf3",
+                                    textAlign: "right",
+                                    fontWeight: 900,
+                                  }}
+                                />
+                                <div style={{ opacity: 0.75, fontWeight: 900 }}>%</div>
+                              </div>
+                            </div>
+
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                              <div style={{ opacity: 0.75 }}>Profit amount</div>
+                              <div style={{ fontWeight: 950 }}>{quoteCurrency} {qMoney(quoteProfitAmount)}</div>
+                            </div>
+
+                            <div style={{ paddingTop: 10, borderTop: "1px dashed #30363d", display: "flex", justifyContent: "space-between", gap: 10 }}>
+                              <div style={{ opacity: 0.85, fontWeight: 950 }}>Final total</div>
+                              <div style={{ fontWeight: 950 }}>{quoteCurrency} {qMoney(quoteFinalTotal)}</div>
+                            </div>
+
+                            <div
+                              style={{
+                                marginTop: 12,
+                                borderRadius: 14,
+                                border: "1px solid #30363d",
+                                background: "#0b0f17",
+                                padding: 12,
+                              }}
+                            >
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                                <div style={{ fontWeight: 950 }}>Customer price</div>
+                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                  <div style={{ opacity: 0.75, fontWeight: 900 }}>{quoteCurrency}</div>
+                                  <input
+                                    value={quoteCustomerPrice}
+                                    onChange={(e) => setQuoteCustomerPrice(e.target.value)}
+                                    inputMode="decimal"
+                                    placeholder="0"
+                                    style={{
+                                      width: 160,
+                                      padding: "8px 10px",
+                                      borderRadius: 12,
+                                      border: "1px solid #30363d",
+                                      background: "#0f1623",
+                                      color: "#e6edf3",
+                                      textAlign: "right",
+                                      fontWeight: 900,
+                                    }}
+                                  />
+                                </div>
+                              </div>
+
+                              <div style={{ marginTop: 10, display: "grid", gap: 8, fontSize: 13 }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                                  <div style={{ opacity: 0.75 }}>Profit (customer price − total cost)</div>
+                                  <div style={{ fontWeight: 950 }}>{quoteCurrency} {qMoney(quoteCustomerProfit)}</div>
+                                </div>
+
+                                <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                                  <div style={{ opacity: 0.75 }}>Profit % (on cost)</div>
+                                  <div style={{ fontWeight: 950 }}>{quoteCustomerProfitPct.toFixed(2)}%</div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px dashed #30363d", opacity: 0.75, fontSize: 12, lineHeight: 1.35 }}>
+                            This matches your Excel flow: cost → profit → final price.
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => setQuoteSections(defaultQuotationSections())}
+                          style={{
+                            padding: "10px 12px",
+                            borderRadius: 14,
+                            border: "1px dashed rgba(255,255,255,0.18)",
+                            background: "transparent",
+                            color: "rgba(230,237,243,0.92)",
+                            cursor: "pointer",
+                            fontWeight: 900,
+                          }}
+                        >
+                          Reset sample sections
+                        </button>
+                      </div>
+                    </div>
+                    </fieldset>
+                    )}
+                  </div>
+                ) : null}
+
+                {/* UPDATES */}
+                {overviewSub === "progress" ? (
+                  <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 14 }}>
+                    <div style={{ fontWeight: 950, fontSize: 14 }}>Progress & Team Updates (UI)</div>
+                    <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                      <div style={{ fontSize: 13, opacity: 0.9 }}>
+                        This will become the reactive team feed: updates + photos + issues + approvals.
+                      </div>
+
+                      <div style={{ border: "1px dashed #30363d", borderRadius: 14, background: "#0f1623", padding: 12 }}>
+                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Example entry</div>
+                        <div style={{ fontSize: 12, opacity: 0.85, display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                          <div>Ahmed • Issue</div>
+                          <div>Today 10:12</div>
+                        </div>
+                        <div style={{ marginTop: 8, fontSize: 13, opacity: 0.92 }}>
+                          Missing hinges for upper cabinets. Waiting supplier confirmation.
+                        </div>
+                        <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          <div style={{ width: 86, height: 60, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.75, fontWeight: 900 }}>
+                            Photo
+                          </div>
+                          <div style={{ width: 86, height: 60, borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.75, fontWeight: 900 }}>
+                            Photo
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => setOverviewSub("progress")}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #30363d",
+                          background: "#1f6feb",
+                          color: "#ffffff",
+                          fontWeight: 900,
+                          cursor: "pointer",
+                          width: "fit-content",
+                        }}
+                      >
+                        Go to Progress tab
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* SETUP (keeps your current save/edit UI) */}
+                {overviewSub === "items" ? (
+                  <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 14 }}>
+                    <div style={{ fontWeight: 950, fontSize: 14 }}>Project setup (temporary)</div>
+                    <div style={{ opacity: 0.75, fontSize: 12, marginTop: 6 }}>
+                      This will later be split into Quotation / Delivery / Items once backend models are ready.
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>
+                      <div style={{ opacity: 0.7, fontSize: 12 }}>Edit money/quotation, delivery & inventory then Save.</div>
+
+                      <button
+                        onClick={() => saveProjectSetup()}
+                        disabled={setupBusy}
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #30363d",
+                          background: setupBusy ? "#111827" : "#1f6feb",
+                          color: "#e6edf3",
+                          fontWeight: 900,
+                          cursor: setupBusy ? "not-allowed" : "pointer",
+                          opacity: setupBusy ? 0.7 : 1,
+                        }}
+                      >
+                        {setupBusy ? "Saving..." : "Save"}
+                      </button>
+                    </div>
+
+                    {setupMsg ? (
+                      <div style={{ marginTop: 10, opacity: setupMsg === "Saved." ? 0.75 : 1, color: setupMsg === "Saved." ? "#7ee787" : "#ff7b72" }}>
+                        {setupMsg}
+                      </div>
+                    ) : null}
+
+                    <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 12 }}>
+                      {/* Payments */}
+                      <div style={{ border: "1px solid #30363d", borderRadius: 12, background: "#0f1623", padding: 12 }}>
+                        <div style={{ fontWeight: 900, marginBottom: 10 }}>Money & Quotation</div>
+
+                        <div style={{ display: "grid", gap: 8 }}>
+                          <label style={{ fontSize: 12, opacity: 0.75 }}>Total (QAR)</label>
+                          <input
+                            value={setupTotal}
+                            onChange={(e) => setSetupTotal(e.target.value)}
+                            placeholder="e.g. 5700"
+                            style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
+                          />
+
+                          <label style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Paid (QAR)</label>
+                          <input
+                            value={setupPaid}
+                            onChange={(e) => setSetupPaid(e.target.value)}
+                            placeholder="e.g. 2850"
+                            style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
+                          />
+
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8, fontSize: 12, opacity: 0.85 }}>
+                            <div>Balance</div>
+                            <div style={{ fontWeight: 900 }}>
+                              {fmtMoney(calcBalance(setupTotal === "" ? null : Number(setupTotal), setupPaid === "" ? null : Number(setupPaid)))}
+                            </div>
+                          </div>
+
+                          {/* MINIFIX_QUOTATION_AREA_ANCHOR_START */}
+                          <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px dashed #30363d" }}>
+                            <div style={{ fontWeight: 900, marginBottom: 8 }}>Quotation</div>
+
+                            <div style={{ display: "grid", gap: 8 }}>
+                              <label style={{ fontSize: 12, opacity: 0.75 }}>Quotation status</label>
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <div style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #30363d", background: "#0b0f17", fontSize: 12, opacity: 0.9 }}>
+                                  Draft
+                                </div>
+                                <div style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #30363d", background: "#0b0f17", fontSize: 12, opacity: 0.9 }}>
+                                  Sent
+                                </div>
+                                <div style={{ padding: "6px 10px", borderRadius: 999, border: "1px solid #30363d", background: "#0b0f17", fontSize: 12, opacity: 0.9 }}>
+                                  Approved
+                                </div>
+                              </div>
+
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <button
+                                  onClick={() => setOverviewSub("quotation")}
+                                  style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3", fontWeight: 900, cursor: "pointer" }}
+                                >
+                                  Open Quotation Builder
+                                </button>
+                                <button
+                                  onClick={() => { setSection("all_files"); setFilesTab("commercial"); }}
+                                  style={{ padding: "8px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0f1623", color: "#e6edf3", fontWeight: 900, cursor: "pointer" }}
+                                >
+                                  View invoices/contracts
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                          {/* MINIFIX_QUOTATION_AREA_ANCHOR_END */}
+                        </div>
+                      </div>
+
+                      {/* Delivery */}
+                      <div style={{ border: "1px solid #30363d", borderRadius: 12, background: "#0f1623", padding: 12 }}>
+                        <div style={{ fontWeight: 900, marginBottom: 10 }}>Delivery</div>
+
+                        <div style={{ display: "grid", gap: 8 }}>
+                          <label style={{ fontSize: 12, opacity: 0.75 }}>Payment date</label>
+                          <input
+                            type="date"
+                            value={setupPaymentDate}
+                            onChange={(e) => setSetupPaymentDate(e.target.value)}
+                            style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
+                          />
+
+                          <label style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Max days to deliver</label>
+                          <input
+                            value={setupMaxDays}
+                            onChange={(e) => setSetupMaxDays(e.target.value)}
+                            placeholder="e.g. 16"
+                            style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3" }}
+                          />
+
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 8, fontSize: 12, opacity: 0.85 }}>
+                            <div>ETA (skip Fridays)</div>
+                            <div style={{ fontWeight: 900 }}>{fmtDateShort(selectedProject.eta_date)}</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Inventory */}
+                      <div style={{ border: "1px solid #30363d", borderRadius: 12, background: "#0f1623", padding: 12 }}>
+                        <div style={{ fontWeight: 900, marginBottom: 10 }}>Inventory</div>
+
+                        <div style={{ display: "grid", gap: 8 }}>
+                          {[
+                            ["bom_prepared", "BOM prepared"],
+                            ["wood_received", "Wood received"],
+                            ["hardware_received", "Hardware received"],
+                            ["ready_for_cutting", "Ready for cutting"],
+                          ].map(([k, label]) => (
+                            <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, opacity: 0.9 }}>
+                              <input
+                                type="checkbox"
+                                checked={!!setupInv?.[k]}
+                                onChange={(e) => setSetupInv((p) => ({ ...(p || {}), [k]: e.target.checked }))}
+                              />
+                              {label}
+                            </label>
+                          ))}
+
+                          <label style={{ fontSize: 12, opacity: 0.75, marginTop: 8 }}>Missing items (one per line)</label>
+                          <textarea
+                            value={setupMissing}
+                            onChange={(e) => setSetupMissing(e.target.value)}
+                            rows={3}
+                            style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", resize: "vertical" }}
+                          />
+
+                          <label style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Notes</label>
+                          <textarea
+                            value={setupNotes}
+                            onChange={(e) => setSetupNotes(e.target.value)}
+                            rows={2}
+                            style={{ padding: "10px 10px", borderRadius: 12, border: "1px solid #30363d", background: "#0b0f17", color: "#e6edf3", resize: "vertical" }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             ) : null}
 
-            <div
+            {/* MINIFIX_ALL_FILES_PANEL_WRAP_V1_START */}
+            {section === "all_files" ? (
+              <div
   style={{
     marginTop: 14,
     display: "grid",
@@ -2616,12 +4681,78 @@ This deletes the file and all its versions.`)
     minWidth: 0,
   }}
 >
+            {/* MINIFIX_FILES_TABS_TOP_V1_START */}
+            <div
+              style={{
+                display: "flex",
+                gap: 6,
+                flexWrap: "wrap",
+                marginBottom: 10,
+
+                /* MINIFIX_FILES_TABS_SPAN_GRID_V1 */
+                gridColumn: "1 / -1",
+              }}
+            >
+              {[
+                ["all", "All Files"],
+                ["commercial", "Invoices"],
+                ["technical", "Technical"],
+                ["images", "Images"],
+                ["cnc", "CNC"],
+              ].map(([k, label]) => {
+                const active = filesTab === (k as FilesTab);
+                return (
+                  <button
+                    key={k}
+                    onClick={() => setFilesTab(k as FilesTab)}
+                    style={{
+                      padding: "8px 14px",
+                      borderRadius: 999,
+                      border: "1px solid #30363d",
+                      background: active ? "#1f6feb" : "#0b0f17",
+                      color: active ? "#ffffff" : "#e6edf3",
+                      fontWeight: 900,
+                      cursor: "pointer",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            {/* MINIFIX_FILES_TABS_TOP_V1_END */}
+
             {/* Files list */}
             <div style={{ border: "1px solid #30363d", borderRadius: 14, background: "#0b0f17", padding: 12, minHeight: 520, minWidth: 0, overflow: "hidden" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", rowGap: 10 }}>
-                <div style={{ fontWeight: 900, fontSize: 15 }}>Files • {SECTION_TITLES[section]}</div>
+                {/* MINIFIX_FILES_HEADER_V4 (tabs outside header box, no scroll row) */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ fontWeight: 900, fontSize: 15, display: "flex", alignItems: "center", gap: 10 }}>
+                    <span>Files</span>
+                    <span style={{ opacity: 0.65, fontSize: 12 }}>{visibleFiles.length} files</span>
+                  </div>
+                </div>
+
+                {/* MINIFIX_FILES_TABS_MOVED_OUTSIDE_CARD_V1 */}
 
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end", maxWidth: "100%" }}>
+                  {/* MINIFIX_ATTACHMENTS_TOGGLE_BTN_V1 */}
+                  <button
+                    onClick={() => setAttachmentsOpen((v) => !v)}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 12,
+                      border: "1px solid #30363d",
+                      background: "#0f1623",
+                      color: "#e6edf3",
+                      fontWeight: 900,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {attachmentsOpen ? "Hide" : "Show"}
+                  </button>
+
                   <input
                     id="uploadInput"
                     type="file"
@@ -2681,11 +4812,14 @@ This deletes the file and all its versions.`)
                 </div>
                 </div>
 
-                <input
-                  value={fileQ}
-                  onChange={(e) => setFileQ(e.target.value)}
-                  placeholder="Search files..."
-                  style={{
+                {/* MINIFIX_ATTACHMENTS_COLLAPSE_BODY_V1_START */}
+                {attachmentsOpen ? (
+                  <>
+                    <input
+                      value={fileQ}
+                      onChange={(e) => setFileQ(e.target.value)}
+                      placeholder="Search files..."
+                      style={{
                     width: "100%",
                     marginTop: 10,
                     boxSizing: "border-box",
@@ -2705,7 +4839,8 @@ This deletes the file and all its versions.`)
                 ) : (
                     visibleFiles.map((f) => {
                     const active = f.id === selectedFileId;
-                    const parts = splitNameTail(f.name);
+                    const displayName = (selectedScopeId === "main" ? f.name : stripScopePrefixFromName(f.name));
+                    const parts = splitNameTail(displayName);
                     return (
                         <button
                         key={f.id}
@@ -2748,13 +4883,13 @@ This deletes the file and all its versions.`)
                                 wordBreak: "break-word",
                                 lineHeight: 1.25,
                               }}
-                              title={f.name}
+                              title={displayName}
                             >
-                              {midEllipsisKeepExt(f.name, 46)}
+                              {midEllipsisKeepExt(displayName, 46)}
                             </div>
                           ) : (
                             <div
-                              title={f.name}
+                              title={displayName}
                               style={{ fontWeight: 900, display: "flex", minWidth: 0, maxWidth: "100%", whiteSpace: "nowrap" }}
                             >
                               <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -2774,6 +4909,13 @@ This deletes the file and all its versions.`)
                     })
                 )}
                 </div>
+                  </>
+                ) : (
+                  <div style={{ marginTop: 10, opacity: 0.75, fontSize: 12 }}>
+                    Attachments hidden.
+                  </div>
+                )}
+                {/* MINIFIX_ATTACHMENTS_COLLAPSE_BODY_V1_END */}
             </div>
 
             {/* Preview */}
@@ -3050,6 +5192,8 @@ This deletes the file and all its versions.`)
                 )}
             </div>
             </div>
+              ) : null}
+            {/* MINIFIX_ALL_FILES_PANEL_WRAP_V1_END */}
 
           </>
         )}

@@ -1,0 +1,28 @@
+# VCS
+.git
+.github
+
+# OS/editor
+.DS_Store
+
+# Node
+**/node_modules
+**/.next
+**/out
+
+# Python
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Secrets
+**/.env
+**/.env.*
+
+# Large / local artifacts
+*.sql
+*.tsv
+*.csv
+*.bundle
+__PATCH_SNAPSHOT__.txt
